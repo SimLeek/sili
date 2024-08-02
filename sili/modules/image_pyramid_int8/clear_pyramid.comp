@@ -1,0 +1,16 @@
+#version 430
+
+layout (local_size_x_id = 0) in;
+
+layout(std430, binding = 0) buffer OutputBuffer {
+    uint outputPyramid[];
+};
+
+layout(constant_id = 1) const uint max_val = 9999;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx<max_val) {  // prevent out of bounds memory access
+        outputPyramid[idx] = 0;
+    }
+}

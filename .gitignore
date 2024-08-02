@@ -1,0 +1,6 @@
+build/
+.cache
+*.spv
+*.pyr
+.idea
+__pycache__/

@@ -1,0 +1,117 @@
+#version 430
+
+layout (local_size_x_id = 0) in;
+
+struct PyramidLevel {
+    int startIdx;
+    int width;
+    int height;
+};
+
+layout(std430, binding = 0) buffer InputBuffer {
+    uint inputImage[];
+};
+
+layout(std430, binding = 1) buffer PyramidData {
+    int channels;
+    int levels;
+    PyramidLevel pyramidLevels[];
+};
+
+layout(std430, binding = 2) buffer OutputBuffer {
+    uint outputPyramid[];
+};
+
+layout(std430, binding = 3) buffer LevelBuffer {
+    int currentLevel;
+};
+
+layout(constant_id = 1) const float pyr_div = 1.0;
+
+#define EXTRACT_UINT8_VALUE(value, index) \
+    (((value) >> ((index)<<3)) & 0xFFu)
+#define EXTRACT_8_FROM_32_ARRAY(array, index) \
+    EXTRACT_UINT8_VALUE(array[index >> 2], index & 3)
+// atomic or no longer needed since we're in the same workgroup:
+#define WRITE_8_TO_32_ARRAY(array, outputIndex, value) \
+    array[outputIndex >> 2] |= value << ((outputIndex & 3) << 3)
+
+#define SAMPLE_CORNER_VALUES(array, indices) \
+        vec4( \
+            float(EXTRACT_8_FROM_32_ARRAY(array, indices.x)), \
+            float(EXTRACT_8_FROM_32_ARRAY(array, indices.y)), \
+            float(EXTRACT_8_FROM_32_ARRAY(array, indices.z)), \
+            float(EXTRACT_8_FROM_32_ARRAY(array, indices.w)) \
+        )
+
+ivec4 calculate_corner_indices(int start_index, int channels, vec2 inputCoords, int nextPyramidLevelHeight, int channel)
+    {
+        int topLeftIdx = start_index * channels +
+                         int(floor(inputCoords.x) * nextPyramidLevelHeight * channels +
+                             floor(inputCoords.y) * channels + channel);
+        int topRightIdx = topLeftIdx + nextPyramidLevelHeight * channels;
+        int bottomLeftIdx = topLeftIdx + channels;
+        int bottomRightIdx = topRightIdx + channels;
+        return ivec4(topLeftIdx, topRightIdx, bottomLeftIdx, bottomRightIdx);
+    }
+
+float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRight, float topLeft, float topRight) {
+    float left = mix(topLeft, bottomLeft, y);
+    float right = mix(topRight, bottomRight, y);
+    return mix(left, right, x);
+}
+
+vec2 calculateInputCoordinates(int x, int y, int nextLevelWidth, int nextLevelHeight, int currentLevelWidth, int currentLevelHeight) {
+    float inputX = float(x) * float(nextLevelWidth) / float(currentLevelWidth);
+    float inputY = float(y) * float(nextLevelHeight) / float(currentLevelHeight);
+    return vec2(inputX, inputY);
+}
+
+void processPixel(int x, int y, int channel, int inputIdx, int outputIdx, int level) {
+    if (level < levels - 1) {
+        PyramidLevel currentPyramidLevel = pyramidLevels[level];
+        PyramidLevel nextPyramidLevel = pyramidLevels[level + 1];
+
+        vec2 inputCoords = calculateInputCoordinates(x, y, nextPyramidLevel.width, nextPyramidLevel.height,
+                                                     currentPyramidLevel.width, currentPyramidLevel.height);
+
+        ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords, nextPyramidLevel.height, channel);
+        vec4 v = SAMPLE_CORNER_VALUES(outputPyramid, cornerIndices);
+
+        float interpolatedValue = bilinearInterpolation(
+                fract(inputCoords.x),
+                fract(inputCoords.y),
+                v.z, v.w, v.x, v.y
+        );
+
+        uint result = uint(interpolatedValue / pyr_div);
+        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
+    } else {
+        // Base image copy
+        uint result = EXTRACT_8_FROM_32_ARRAY(inputImage, inputIdx);
+        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
+    }
+}
+
+void main() {
+    int levelWidth, levelHeight;
+
+    for (int level = currentLevel; level >= 0; level--) {
+        for (int pack_idx = 0; pack_idx < 4; pack_idx++) {
+        uint idx = (gl_GlobalInvocationID.x << 2) + pack_idx;
+        levelWidth = pyramidLevels[level].width;
+        levelHeight = pyramidLevels[level].height;
+        int y = int((idx / channels) % levelHeight);
+        int x = int((idx / channels) / levelHeight);
+        int channel = int(int(idx) % channels);
+        int outputIndex = pyramidLevels[level].startIdx * channels + x * levelHeight * channels + y * channels + channel;
+
+        if (x < levelWidth && y < levelHeight) {
+                processPixel(x, y, channel, int(idx), outputIndex, level);
+            }
+        }
+    }
+    if(gl_GlobalInvocationID.x==0) {
+        currentLevel = levels-1;
+    }
+}

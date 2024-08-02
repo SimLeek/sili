@@ -1,0 +1,4 @@
+displayarray @ git+https://github.com/SimLeek/displayarray.git@master  # single window box packing multiple sources is unreleased
+kp
+numpy==1.26.4
+opencv_python==4.9.0.80
