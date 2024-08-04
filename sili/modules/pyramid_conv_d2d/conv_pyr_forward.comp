@@ -29,7 +29,7 @@ layout(std430, binding = 3) buffer OutputBuffer {
 layout(constant_id = 1) const uint kernel_width = 0;
 layout(constant_id = 2) const uint kernel_height = 0;
 layout(constant_id = 3) const uint kernel_depth = 0;
-layout(constant_id = 4) const uint kernel_channels_out = 0;
+layout(constant_id = 4) const uint kernel_channels_out = 1;  // needs to be non-zero to compile because of local array
 
 // this allows us to use special indexing with remainders while using max 1D size
 // their product should be local_size_x to optimize caching
@@ -161,9 +161,13 @@ void main() {
     }
     ivec4 optim_xy = optimized_xy(idx-in_startIdx, in_width, in_height);
     ivec2 out_idx = optimized_vec2(optim_xy, in_width, in_height);
+    float localData[kernel_channels_out]; // ={0} is default
+
     if(out_idx.x>=0 && out_idx.y>=0 && out_idx.x<in_width && out_idx.y<in_height) {
-        for (int kco = 0; kco < kernel_channels_out; kco++) {
-            float result = 0;
+        uint out_idx2 = in_startIdx * kernel_channels_out +
+                                        int((out_idx.x) * currentPyramidLevel.height * kernel_channels_out +
+                                        (out_idx.y) * kernel_channels_out);
+
             for (int kd = 0; kd < kernel_depth; kd++) {
                 int d_diff = kd - int(kernel_depth / 2);
                 int next_level = in_level + d_diff;
@@ -188,26 +192,27 @@ void main() {
 
                             if (inputCoords2.x >= 0 && inputCoords2.x < nextPyramidLevel.width && inputCoords2.y >= 0 && inputCoords2.y < nextPyramidLevel.height) {
                                 for (int kci = 0; kci < channels; kci++) {
-                                    uint weight_idx = kco * (channels * kernel_depth * kernel_height * kernel_width) +
-                                    kci * (kernel_depth * kernel_height * kernel_width) +
-                                    kd * (kernel_height * kernel_width) +
-                                    kh * kernel_width +
-                                    kw;
-                                    if (d_diff == 0) {
-                                        int in_idx = in_startIdx * channels +
-                                        int((out_idx.x + w_diff) * currentPyramidLevel.height * channels +
-                                        (out_idx.y + h_diff) * channels + kci);
-                                        result += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * weights[weight_idx];
-                                    } else {
-                                        ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords2, nextPyramidLevel.height, kci);
-                                        vec4 v = SAMPLE_CORNER_VALUES(inputPyramid, cornerIndices);
+                                    uint weight_idx = kd * (kernel_height * kernel_width * channels * kernel_channels_out) +
+                                    kh * (kernel_width * channels * kernel_channels_out) +
+                                    kw * (channels * kernel_channels_out) +
+                                    kci * kernel_channels_out;
+                                    for (int kco = 0; kco < kernel_channels_out; kco++) {
+                                        if (d_diff == 0) {
+                                            int in_idx = in_startIdx * channels +
+                                            int((out_idx.x + w_diff) * currentPyramidLevel.height * channels +
+                                            (out_idx.y + h_diff) * channels + kci);
+                                            localData[kco] += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * weights[weight_idx+kco];
+                                        } else {
+                                            ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords2, nextPyramidLevel.height, kci);
+                                            vec4 v = SAMPLE_CORNER_VALUES(inputPyramid, cornerIndices);
 
-                                        float pixel = bilinearInterpolation(
-                                            fract(inputCoords2.x),
-                                            fract(inputCoords2.y),
-                                            v.z, v.w, v.x, v.y
-                                        );
-                                        result += pixel * weights[weight_idx];
+                                            float pixel = bilinearInterpolation(
+                                                fract(inputCoords2.x),
+                                                fract(inputCoords2.y),
+                                                v.z, v.w, v.x, v.y
+                                            );
+                                            localData[kco] += pixel * weights[weight_idx+kco];
+                                        }
                                     }
                                 }
                             }
@@ -215,10 +220,8 @@ void main() {
                     }
                 }
             }
-            uint out_idx2 = in_startIdx * kernel_channels_out +
-                                        int((out_idx.x) * currentPyramidLevel.height * kernel_channels_out +
-                                        (out_idx.y) * kernel_channels_out + kco);
-            outputPyramid[out_idx2] = result;
+        for (int kco = 0; kco < kernel_channels_out; kco++){
+            outputPyramid[out_idx2+kco] = localData[kco];
         }
     }
 }

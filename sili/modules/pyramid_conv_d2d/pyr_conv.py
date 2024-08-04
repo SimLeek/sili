@@ -120,7 +120,7 @@ def run_spatial_tests(input_pyr_file):
     print("Running spatial tests...")
     for d, h, w in itertools.product((0, 1), (0, 1), (0, 1)):
         kernel = np.zeros((3, 3, 3, 3, 3), dtype=np.float32)
-        kernel[:, :, d, w, h] = 1  # Emphasize the specific dimension
+        kernel[d, w, h, :, :] = 1  # Emphasize the specific dimension
         print(f"Testing spatial dimension: D={d}, H={h}, W={w}")
         display_pyramid(input_pyr_file, kernel)
 
@@ -131,9 +131,9 @@ def run_color_tests(input_pyr_file):
     b_to_rgb = np.zeros((3, 3, 3, 3, 3), dtype=np.float32)
     # RGB to R
     # OIDHW
-    bgr_to_b[1, :, 1, 1, 1] = 1  # Only take the blue channel
+    bgr_to_b[1, 1, 1, :, 1] = 1  # Only take the blue channel
     # R to RGB
-    b_to_rgb[:, 1, 1, 1, 1] = 1  # Replicate the blue channel to all RGB channels
+    b_to_rgb[1, 1, 1, 1, :] = 1  # Replicate the blue channel to all RGB channels
     print("Testing color conversion: bgr_to_b")
     display_pyramid(input_pyr_file, bgr_to_b)
 
@@ -149,8 +149,8 @@ if __name__ == '__main__':
     display_pyramid(input_pyr_file, edge)  # Initial display without specific kernel
 
     # Run spatial and color tests
-    #run_spatial_tests(input_pyr_file)
-    #run_color_tests(input_pyr_file)
+    run_spatial_tests(input_pyr_file)
+    run_color_tests(input_pyr_file)
 
     # generate_pyramid_file("../../../test/files/test_ai_pls_ignore.png",
     #                      "../../../test/files/test_ai_pyr_pls_ignore.pyr")
