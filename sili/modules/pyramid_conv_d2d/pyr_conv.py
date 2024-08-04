@@ -57,7 +57,7 @@ class PyrConv(Module):
             workgroup=[int(np.ceil(self.in_img_pyr.size / (self.gpu.max_workgroup_invocations))), 0, 0],
             spec_consts=np.asarray([
                 self.gpu.max_workgroup_invocations,
-                3,3,3,3,
+                3,3,3,3,3,
                 chunk_w, chunk_h
             ], dtype=np.uint32).view(np.float32)
         )

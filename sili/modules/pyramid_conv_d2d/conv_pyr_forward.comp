@@ -26,15 +26,25 @@ layout(std430, binding = 3) buffer OutputBuffer {
     float outputPyramid[];
 };
 
-layout(constant_id = 1) const uint kernel_width = 0;
-layout(constant_id = 2) const uint kernel_height = 0;
-layout(constant_id = 3) const uint kernel_depth = 0;
-layout(constant_id = 4) const uint kernel_channels_out = 1;  // needs to be non-zero to compile because of local array
+// need to be non-zero to compile because of local arrays
+layout(constant_id = 1) const uint kernel_width = 1;
+layout(constant_id = 2) const uint kernel_height = 1;
+layout(constant_id = 3) const uint kernel_depth = 1;
+layout(constant_id = 4) const uint kernel_channels_in = 1;
+layout(constant_id = 5) const uint kernel_channels_out = 1;
+//todo: do this externally with compiler
+#define WEIGHTS_FIT_INTO_SHARED_MEMORY
 
+#ifdef WEIGHTS_FIT_INTO_SHARED_MEMORY
+const uint weight_size = kernel_width*kernel_height*kernel_depth*kernel_channels_in*kernel_channels_out;
+shared float sharedWeights[weight_size];
+#else
+#define sharedWeights weights
+#endif
 // this allows us to use special indexing with remainders while using max 1D size
 // their product should be local_size_x to optimize caching
-layout(constant_id = 5) const uint chunk_width = 0;
-layout(constant_id = 6) const uint chunk_height = 0;
+layout(constant_id = 6) const uint chunk_width = 1;
+layout(constant_id = 7) const uint chunk_height = 1;
 
 #define EXTRACT_UINT8_VALUE(value, index) \
     (((value) >> ((index)<<3)) & 0xFFu)
@@ -142,6 +152,15 @@ void main() {
     int in_startIdx = -1;
     int in_width = -1;
     int in_height = -1;
+
+    #ifdef WEIGHTS_FIT_INTO_SHARED_MEMORY
+    // Distribute weight copying to shared memory
+    for (uint i = gl_LocalInvocationID.x; i < weight_size; i += gl_WorkGroupSize.x) {
+        sharedWeights[i] = weights[i];
+    }
+    barrier();
+    #endif
+
     PyramidLevel currentPyramidLevel;
     for(int level=0;level<levels-1;level++) {
         if(idx>=pyramidLevels[level].startIdx && idx<pyramidLevels[level+1].startIdx){
@@ -201,7 +220,7 @@ void main() {
                                             int in_idx = in_startIdx * channels +
                                             int((out_idx.x + w_diff) * currentPyramidLevel.height * channels +
                                             (out_idx.y + h_diff) * channels + kci);
-                                            localData[kco] += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * weights[weight_idx+kco];
+                                            localData[kco] += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * sharedWeights[weight_idx + kco];
                                         } else {
                                             ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords2, nextPyramidLevel.height, kci);
                                             vec4 v = SAMPLE_CORNER_VALUES(inputPyramid, cornerIndices);
@@ -211,7 +230,7 @@ void main() {
                                                 fract(inputCoords2.y),
                                                 v.z, v.w, v.x, v.y
                                             );
-                                            localData[kco] += pixel * weights[weight_idx+kco];
+                                            localData[kco] += pixel * sharedWeights[weight_idx + kco];
                                         }
                                     }
                                 }
