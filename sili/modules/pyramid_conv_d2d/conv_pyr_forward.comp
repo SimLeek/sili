@@ -26,17 +26,15 @@ layout(std430, binding = 3) buffer OutputBuffer {
     float outputPyramid[];
 };
 
-
-
 layout(constant_id = 1) const uint kernel_width = 0;
 layout(constant_id = 2) const uint kernel_height = 0;
 layout(constant_id = 3) const uint kernel_depth = 0;
-layout(constant_id = 5) const uint kernel_channels_out = 0;
+layout(constant_id = 4) const uint kernel_channels_out = 0;
 
 // this allows us to use special indexing with remainders while using max 1D size
-// their product SHOULD be local_size_x to optimize caching
-layout(constant_id = 6) const uint chunk_width = 0;
-layout(constant_id = 7) const uint chunk_height = 0;
+// their product should be local_size_x to optimize caching
+layout(constant_id = 5) const uint chunk_width = 0;
+layout(constant_id = 6) const uint chunk_height = 0;
 
 #define EXTRACT_UINT8_VALUE(value, index) \
     (((value) >> ((index)<<3)) & 0xFFu)
@@ -54,6 +52,18 @@ int optimized_index(ivec4 optim_xy, uint image_width, uint image_height){ // ima
     }else{
         int full_index = optim_xy.z*int(image_height)+optim_xy.w;
         return full_index;
+    }
+
+    // Do this after the function: if (full_index<image_width*image_height && full_index>=0)
+}
+
+ivec2 optimized_vec2(ivec4 optim_xy, uint image_width, uint image_height){ // image width and height are still needed because x and y will be changed in convolutions
+    if(optim_xy.x != -1){
+        int full_index_y = optim_xy.y*int(chunk_height)+optim_xy.w;
+        int full_index_x = optim_xy.x*int(chunk_width)+optim_xy.z;
+        return ivec2(full_index_x, full_index_y);
+    }else{
+        return ivec2(optim_xy.z, optim_xy.w);
     }
 
     // Do this after the function: if (full_index<image_width*image_height && full_index>=0)
@@ -128,8 +138,6 @@ float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRigh
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
-    uint pyr_size = (pyramidLevels[levels-1].startIdx+2);
-
     int in_level = -1;
     int in_startIdx = -1;
     int in_width = -1;
@@ -151,26 +159,23 @@ void main() {
         in_height = pyramidLevels[in_level].height;
         currentPyramidLevel = pyramidLevels[in_level];
     }
-
     ivec4 optim_xy = optimized_xy(idx-in_startIdx, in_width, in_height);
-    int out_idx = optimized_index(optim_xy, in_width, in_height);
-    int y = int((out_idx / channels) % in_height);
-    int x = int((out_idx / channels) / in_height);
-    if(out_idx>=0 && out_idx<in_width*in_height) {
+    ivec2 out_idx = optimized_vec2(optim_xy, in_width, in_height);
+    if(out_idx.x>=0 && out_idx.y>=0 && out_idx.x<in_width && out_idx.y<in_height) {
         for (int kco = 0; kco < kernel_channels_out; kco++) {
             float result = 0;
             for (int kd = 0; kd < kernel_depth; kd++) {
                 int d_diff = kd - int(kernel_depth / 2);
                 int next_level = in_level + d_diff;
-                if (next_level > 0 && next_level < levels - 1) {
+                if (next_level >= 0 && next_level < levels) {
                     int next_startIdx = pyramidLevels[next_level].startIdx;
                     int next_width = pyramidLevels[next_level].width;
                     int next_height = pyramidLevels[next_level].height;
                     PyramidLevel nextPyramidLevel = pyramidLevels[next_level];
 
                     vec2 inputCoords = calculateInputCoordinates(
-                        x,
-                        y,
+                        out_idx.x,
+                        out_idx.y,
                         nextPyramidLevel.width,
                         nextPyramidLevel.height,
                         currentPyramidLevel.width,
@@ -193,9 +198,9 @@ void main() {
                                     kh * kernel_width +
                                     kw;
                                     if (d_diff == 0) {
-                                        int in_idx = (out_idx + in_startIdx) * channels +
-                                        int((x + w_diff) * currentPyramidLevel.height * channels +
-                                        (y + h_diff) * channels + kci);
+                                        int in_idx = in_startIdx * channels +
+                                        int((out_idx.x + w_diff) * currentPyramidLevel.height * channels +
+                                        (out_idx.y + h_diff) * channels + kci);
                                         result += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * weights[weight_idx];
                                     } else {
                                         ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords2, nextPyramidLevel.height, kci);
@@ -214,7 +219,9 @@ void main() {
                     }
                 }
             }
-            int out_idx2 = int((out_idx + in_startIdx) * kernel_channels_out + kco);
+            uint out_idx2 = in_startIdx * kernel_channels_out +
+                                        int((out_idx.x) * currentPyramidLevel.height * kernel_channels_out +
+                                        (out_idx.y) * kernel_channels_out + kco);
             outputPyramid[out_idx2] = result;
         }
     }

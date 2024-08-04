@@ -64,17 +64,17 @@ class ImagePyramidBuffer(object):
         return im_list
 
     def __setstate__(self, state):
-        self.levels, self.channels, self.use_lvl_buf = state[:3]
+        self.levels, self.channels, self.type, self.use_lvl_buf = state[:4]
         # Restore the buffer from serialized data
-        self.image_buffer = deserialize_buffer(state[3])
+        self.image_buffer = deserialize_buffer(state[4])
         if self.use_lvl_buf:
-            self.pyr_lvl_buffer = deserialize_buffer(state[4])
+            self.pyr_lvl_buffer = deserialize_buffer(state[5])
         else:
             self.pyr_lvl_buffer = None
 
     def __getstate__(self):
         # Return state to be pickled (excluding buffer, assuming buffer.data() is picklable)
-        return (self.levels, self.channels, self.use_lvl_buf,
+        return (self.levels, self.channels, self.type, self.use_lvl_buf,
                 serialize_buffer(self.image_buffer),
                 serialize_buffer(self.pyr_lvl_buffer) if self.use_lvl_buf else None)
 

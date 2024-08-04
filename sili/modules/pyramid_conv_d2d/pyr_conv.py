@@ -15,9 +15,6 @@ from typing import Union
 
 file_path = os.path.dirname(os.path.abspath(__file__))
 
-# todo: save an int8 pyramid like is expected and input that
-# todo: remove the  indexing optimization if that doesn't help
-
 class PyrConv(Module):
     def __init__(self,
                  gpu: GPUManager,
@@ -33,10 +30,11 @@ class PyrConv(Module):
 
         assert isinstance(image_pyr, ImagePyramidBuffer)
         self.in_img_pyr = ImagePyramidBuffer(self.gpu, image_pyr.levels, image_pyr.channels, image_pyr.use_lvl_buf,
-                                             type=image_pyr.type if hasattr(image_pyr, 'tyoe') else np.float32  # todo: update image_pyr to always save type
+                                             type=image_pyr.type
                                              )
         self.out_pyr = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, type=np.float32)
 
+        # todo: do 27 tests for input position, and up to 9 tests for color, using a one hot like matrix
         if callable(init_conv):
             self.conv = ndarrayBuffer(gpu, init_conv(3, 3, 3, 3, 3))
         elif isinstance(init_conv, np.ndarray):
@@ -50,13 +48,12 @@ class PyrConv(Module):
         self.forward_input_buffers = [self.conv.buffer, self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer]
         self.forward_output_buffers = [self.out_pyr.image_buffer]
 
-        #chunk_w, chunk_h = find_good_dimension_sizes(self.gpu.max_workgroup_invocations, 2)
-        chunk_w, chunk_h = 8, 8
+        chunk_w, chunk_h = find_good_dimension_sizes(self.gpu.max_workgroup_invocations, 2)
 
         self.forward_algorithm = self.gpu.manager.algorithm(
             [*self.forward_input_buffers, *self.forward_output_buffers],
             spirv=self.forward_shader,
-            workgroup=[int(np.ceil(self.in_img_pyr.size / (self.in_img_pyr.channels * self.gpu.max_workgroup_invocations))), 0, 0],
+            workgroup=[int(np.ceil(self.in_img_pyr.size / (self.gpu.max_workgroup_invocations))), 0, 0],
             spec_consts=np.asarray([
                 self.gpu.max_workgroup_invocations,
                 3,3,3,3,
@@ -79,7 +76,9 @@ def image_normalize(im:np.ndarray):
     max_val = np.max(im)
     min_val = np.min(im)
     span = max_val-min_val
-    im2 = (im/span)-min_val  # now 0 to 1
+    if span==0:
+        span= 1
+    im2 = (im-min_val)/span  # now 0 to 1
     return im2
 
 def display_basic_forward_sequence(pyr, seq, pyr_in:ImagePyramidBuffer, display=None):
