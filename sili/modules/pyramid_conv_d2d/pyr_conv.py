@@ -1,4 +1,5 @@
 import pickle
+import time
 
 import kp
 import numpy as np
@@ -84,9 +85,15 @@ def image_normalize(im:np.ndarray):
 def display_basic_forward_sequence(pyr, seq, pyr_in:ImagePyramidBuffer, display=None):
     if display is None:
         display = DirectDisplay()
+        while display.window.is_closing:
+            display = DirectDisplay()
 
+    import time
     pyr.in_img_pyr.set(pyr_in.image_buffer)
+    t0 = time.time()
     seq.eval()
+    t1 = time.time()
+    print(f"eval time:{t1 - t0}, fps:{1. / (t1 - t0)}")
     out_images = pyr.out_pyr.get()
 
     for i, o in enumerate(out_images):
@@ -97,70 +104,53 @@ def display_basic_forward_sequence(pyr, seq, pyr_in:ImagePyramidBuffer, display=
             break
 
 
-def generate_pyramid_file(input_image_file, output_pyr_file):
-    from sili.core.runners import get_forward_sequence
-    import pickle
 
-    gpu = GPUManager()
-    im = cv2.imread(input_image_file).astype(np.uint8)
-    pyr = ToImagePyramid(gpu, im)  # im used to set size
-
-    seq = get_forward_sequence([pyr])
-    pyr.image.set(im)
-    seq.eval()
-    with open(output_pyr_file, mode='wb') as f:
-        pickle.dump(pyr.out_pyr, f)
-    with open(output_pyr_file, mode='rb') as f:
-        im_pyr = pickle.load(f)
-        print(im_pyr)
-
-
-def display_pyramid(input_pyr_file):
+def display_pyramid(input_pyr_file, kernel=None):
     from sili.core.runners import get_forward_sequence
 
     gpu = GPUManager()
     with open(input_pyr_file, mode='rb') as f:
         pyr_in = pickle.load(f)
-    pyr = PyrConv(gpu, pyr_in)  # im used to set width, height, and channels
+    pyr = PyrConv(gpu, pyr_in, init_conv=kernel)  # im used to set width, height, and channels
     seq = get_forward_sequence([pyr])
     display_basic_forward_sequence(pyr, seq, pyr_in)
 
+def run_spatial_tests(input_pyr_file):
+    import itertools
+    print("Running spatial tests...")
+    for d, h, w in itertools.product((0, 1), (0, 1), (0, 1)):
+        kernel = np.zeros((3, 3, 3, 3, 3), dtype=np.float32)
+        kernel[:, :, d, w, h] = 1  # Emphasize the specific dimension
+        print(f"Testing spatial dimension: D={d}, H={h}, W={w}")
+        display_pyramid(input_pyr_file, kernel)
 
-def display_pyramid_from_camera(camera):
-    from sili.core.runners import get_forward_sequence
-    from displayarray import read_updates, DirectDisplay
-    import time
+def run_color_tests(input_pyr_file):
+    print("Running color tests...")
+    # Generate kernels for color tests (rgb_to_r, r_to_rgb)
+    bgr_to_b = np.zeros((3, 3, 3, 3, 3), dtype=np.float32)
+    b_to_rgb = np.zeros((3, 3, 3, 3, 3), dtype=np.float32)
+    # RGB to R
+    # OIDHW
+    bgr_to_b[1, :, 1, 1, 1] = 1  # Only take the blue channel
+    # R to RGB
+    b_to_rgb[:, 1, 1, 1, 1] = 1  # Replicate the blue channel to all RGB channels
+    print("Testing color conversion: bgr_to_b")
+    display_pyramid(input_pyr_file, bgr_to_b)
 
-    #r = read_updates(camera, size=(9999, 9999))
-    #r = read_updates(camera, size=(1280,960))
-    r = read_updates(camera, size=(-1, -1))
-    gpu = GPUManager()
-    first = True
-    pyr = None
-    seq = None
-    display = DirectDisplay()
-    while r:
-        if not r.frames:
-            continue
-        im = r.frames[str(camera)][0].astype(np.uint8)
-        if first:
-            pyr = ToImagePyramid(gpu, im)  # im used to set width, height, and channels
-            seq = get_forward_sequence([pyr])
-            first = False
-        pyr.image.set(im)
-        t0 = time.time()
-        seq.eval()
-        t1 = time.time()
-        out_images = pyr.out_pyr.get()
-        print(f"eval time:{t1 - t0}, fps:{1. / (t1 - t0)}")
-        for i, o in enumerate(out_images):
-            display.imshow(f'output {i}', o)
-        display.update()
-        if display.window.is_closing:
-            break
+    print("Testing color conversion: b_to_rgb")
+    display_pyramid(input_pyr_file, b_to_rgb)
 
 if __name__ == '__main__':
-    display_pyramid("../../../test/files/test_ai_pyr_pls_ignore.pyr")
+    input_pyr_file = "../../../test/files/test_ai_pyr_pls_ignore.pyr"
+
+    from sili.util.preset_convs import get_edge_detector_kernel
+
+    edge = get_edge_detector_kernel(3, 3)
+    display_pyramid(input_pyr_file, edge)  # Initial display without specific kernel
+
+    # Run spatial and color tests
+    #run_spatial_tests(input_pyr_file)
+    #run_color_tests(input_pyr_file)
 
     # generate_pyramid_file("../../../test/files/test_ai_pls_ignore.png",
     #                      "../../../test/files/test_ai_pyr_pls_ignore.pyr")

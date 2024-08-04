@@ -44,6 +44,8 @@ class ImagePyramidBuffer(object):
         return self.image_buffer.size()
 
     def set(self, image):
+        if image.dtype==np.float64 and self.type==np.float32:
+            print("Warning: bit-packing 64-bit floats into 32-bits. This is probably not what you want.")
         if isinstance(image, np.ndarray):
             pad_len = -image.size * np.dtype(image.dtype).itemsize % np.dtype(np.float32).itemsize
             if pad_len != 0:

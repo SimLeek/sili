@@ -168,9 +168,6 @@ void main() {
                 int d_diff = kd - int(kernel_depth / 2);
                 int next_level = in_level + d_diff;
                 if (next_level >= 0 && next_level < levels) {
-                    int next_startIdx = pyramidLevels[next_level].startIdx;
-                    int next_width = pyramidLevels[next_level].width;
-                    int next_height = pyramidLevels[next_level].height;
                     PyramidLevel nextPyramidLevel = pyramidLevels[next_level];
 
                     vec2 inputCoords = calculateInputCoordinates(
@@ -187,10 +184,9 @@ void main() {
                         for (int kh = 0; kh < kernel_height; kh++) {
                             int h_diff = kh - int(kernel_height / 2);
 
-                            // scan with
                             vec2 inputCoords2 = inputCoords + vec2(w_diff, h_diff);
 
-                            if (inputCoords2.x >= 0 && inputCoords2.x < next_width && inputCoords2.y >= 0 && inputCoords2.y < next_height) {
+                            if (inputCoords2.x >= 0 && inputCoords2.x < nextPyramidLevel.width && inputCoords2.y >= 0 && inputCoords2.y < nextPyramidLevel.height) {
                                 for (int kci = 0; kci < channels; kci++) {
                                     uint weight_idx = kco * (channels * kernel_depth * kernel_height * kernel_width) +
                                     kci * (kernel_depth * kernel_height * kernel_width) +

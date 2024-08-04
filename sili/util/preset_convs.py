@@ -51,9 +51,7 @@ def get_edge_detector_kernel(dimensions: int, channels: int) -> np.ndarray:
         for s in range(channels)
     ]), axis=0)
 
-    # normalize
-    sum_out = np.sum(out)-out[(1 for _ in range(len(out.shape)))]
-    out /= sum_out
-    out[(1 for _ in range(len(out.shape)))] = 1
+    out = out.astype(np.float32)
+    out = out.transpose([3, 4, 0, 1, 2])  # match our system
 
     return out
