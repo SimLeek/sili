@@ -8,23 +8,25 @@ struct PyramidLevel {
     int height;
 };
 
-layout(std430, binding = 0) buffer InputBuffer {
+layout(std430, binding = 0) buffer vertConvBuffer {
+    float weights[];
+};
+
+layout(std430, binding = 1) buffer InputBuffer {
     int inputPyramid[];
 };
 
-layout(std430, binding = 1) buffer PyramidData {
+layout(std430, binding = 2) buffer PyramidData {
     int channels;
     int levels;
     PyramidLevel pyramidLevels[];
 };
 
-layout(std430, binding = 2) buffer OutputBuffer {
+layout(std430, binding = 3) buffer OutputBuffer {
     float outputPyramid[];
 };
 
-layout(std430, binding = 3) buffer vertConvBuffer {
-    float weights[];
-};
+
 
 layout(constant_id = 1) const uint kernel_width = 0;
 layout(constant_id = 2) const uint kernel_height = 0;
@@ -154,7 +156,7 @@ void main() {
     int out_idx = optimized_index(optim_xy, in_width, in_height);
     int y = int((out_idx / channels) % in_height);
     int x = int((out_idx / channels) / in_height);
-    if(out_idx>=0 && out_idx<out_width*out_height) {
+    if(out_idx>=0 && out_idx<in_width*in_height) {
         for (int kco = 0; kco < kernel_channels_out; kco++) {
             float result = 0;
             for (int kd = 0; kd < kernel_depth; kd++) {
@@ -185,7 +187,7 @@ void main() {
 
                             if (inputCoords2.x >= 0 && inputCoords2.x < next_width && inputCoords2.y >= 0 && inputCoords2.y < next_height) {
                                 for (int kci = 0; kci < channels; kci++) {
-                                    int weight_idx = kco * (channels * kernel_depth * kernel_height * kernel_width) +
+                                    uint weight_idx = kco * (channels * kernel_depth * kernel_height * kernel_width) +
                                     kci * (kernel_depth * kernel_height * kernel_width) +
                                     kd * (kernel_height * kernel_width) +
                                     kh * kernel_width +
