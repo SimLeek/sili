@@ -44,6 +44,8 @@ class ImagePyramidBuffer(object):
         return self.image_buffer.size()
 
     def set(self, image):
+        if image.dtype==np.float64 and self.type==np.float32:
+            print("Warning: bit-packing 64-bit floats into 32-bits. This is probably not what you want.")
         if isinstance(image, np.ndarray):
             pad_len = -image.size * np.dtype(image.dtype).itemsize % np.dtype(np.float32).itemsize
             if pad_len != 0:
@@ -64,17 +66,17 @@ class ImagePyramidBuffer(object):
         return im_list
 
     def __setstate__(self, state):
-        self.levels, self.channels, self.use_lvl_buf = state[:3]
+        self.levels, self.channels, self.type, self.use_lvl_buf = state[:4]
         # Restore the buffer from serialized data
-        self.image_buffer = deserialize_buffer(state[3])
+        self.image_buffer = deserialize_buffer(state[4])
         if self.use_lvl_buf:
-            self.pyr_lvl_buffer = deserialize_buffer(state[4])
+            self.pyr_lvl_buffer = deserialize_buffer(state[5])
         else:
             self.pyr_lvl_buffer = None
 
     def __getstate__(self):
         # Return state to be pickled (excluding buffer, assuming buffer.data() is picklable)
-        return (self.levels, self.channels, self.use_lvl_buf,
+        return (self.levels, self.channels, self.type, self.use_lvl_buf,
                 serialize_buffer(self.image_buffer),
                 serialize_buffer(self.pyr_lvl_buffer) if self.use_lvl_buf else None)
 
