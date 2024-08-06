@@ -21,6 +21,28 @@ def get_forward_sequence(
 
     return sequence
 
+def get_fast_forward_sequence(
+        modules: List[Module]
+):
+    # we're assuming all modules are on the same device
+    initialization_sequence = modules[0].gpu.manager.sequence()
+
+    # Record the operations into the sequences in the most unoptimized way possible
+    for module in modules:
+        initialization_sequence.record(kp.OpTensorSyncDevice([*module.forward_input_buffers]))
+        [initialization_sequence.record(fo) for fo in module.forward_ops()]
+        initialization_sequence.record(kp.OpTensorSyncLocal([*module.forward_output_buffers]))
+    initialization_sequence.eval()
+
+    sequence = modules[0].gpu.manager.sequence()
+
+    # Record the operations into the sequences in the most unoptimized way possible
+    sequence.record(kp.OpTensorSyncDevice([*modules[0].forward_input_buffers]))
+    for module in modules:
+        [sequence.record(fo) for fo in module.forward_ops()]
+    sequence.record(kp.OpTensorSyncLocal([*modules[-1].forward_output_buffers]))
+
+    return sequence
 
 def get_full_sequence(
         modules: List[Module],

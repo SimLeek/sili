@@ -52,6 +52,5 @@ def get_edge_detector_kernel(dimensions: int, channels: int) -> np.ndarray:
     ]), axis=0)
 
     out = out.astype(np.float32)
-    #out = out.transpose([3, 4, 0, 1, 2])  # match our system
 
     return out

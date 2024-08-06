@@ -33,7 +33,8 @@ layout(constant_id = 3) const uint kernel_depth = 1;
 layout(constant_id = 4) const uint kernel_channels_in = 1;
 layout(constant_id = 5) const uint kernel_channels_out = 1;
 //todo: do this externally with compiler
-#define WEIGHTS_FIT_INTO_SHARED_MEMORY
+//idk why, but putting weights into shared memory makes them zero and gives no speed boost
+//#define WEIGHTS_FIT_INTO_SHARED_MEMORY
 
 #ifdef WEIGHTS_FIT_INTO_SHARED_MEMORY
 const uint weight_size = kernel_width*kernel_height*kernel_depth*kernel_channels_in*kernel_channels_out;
@@ -41,10 +42,23 @@ shared float sharedWeights[weight_size];
 #else
 #define sharedWeights weights
 #endif
-// this allows us to use special indexing with remainders while using max 1D size
-// their product should be local_size_x to optimize caching
+// todo: move this into local size x and y and make num_workgroups_x the full size and num_workgroups_y 1
 layout(constant_id = 6) const uint chunk_width = 1;
 layout(constant_id = 7) const uint chunk_height = 1;
+
+// needs to be precalculated based on scale and kernel size
+// will be ceil(scale)*floor(kernel_w/2)+1 for w, for example
+// the +1 handles the case where the chunk has an off starting point for the local group
+layout(constant_id = 8) const uint chunk_pad_w = 1;
+layout(constant_id = 9) const uint chunk_pad_h = 1;
+
+//changed too much. This is now a new file for this attribute
+//#define CHUNKS_FITS_INTO_SHARED_MEMORY
+
+const uint chunk_size = (chunk_width+chunk_pad_w*2)*
+                        (chunk_height+chunk_pad_h*2)*
+                        kernel_depth*kernel_channels_in;
+shared float sharedChunk[chunk_size];
 
 #define EXTRACT_UINT8_VALUE(value, index) \
     (((value) >> ((index)<<3)) & 0xFFu)
@@ -68,50 +82,35 @@ int optimized_index(ivec4 optim_xy, uint image_width, uint image_height){ // ima
 }
 
 ivec2 optimized_vec2(ivec4 optim_xy, uint image_width, uint image_height){ // image width and height are still needed because x and y will be changed in convolutions
-    if(optim_xy.x != -1){
+    //if(optim_xy.x != -1){
         int full_index_y = optim_xy.y*int(chunk_height)+optim_xy.w;
         int full_index_x = optim_xy.x*int(chunk_width)+optim_xy.z;
         return ivec2(full_index_x, full_index_y);
-    }else{
+    /*}else{
         return ivec2(optim_xy.z, optim_xy.w);
-    }
+    }*/
 
     // Do this after the function: if (full_index<image_width*image_height && full_index>=0)
 }
 
 //note: if memory is less of a problem than all of these multiply/divide ops, this can be pre-computed.
 ivec4 optimized_xy(uint unoptimized_index, uint image_width, uint image_height){  // unoptimized_index is WITHIN the image, so subtract image_start in image pyramids
-    if(unoptimized_index<image_height*image_width){ // Happens often. sum_of_image_sizes%1024!=0
-        uint image_w_chunks = image_width/chunk_width;  //floor
-        uint image_h_chunks = image_height/chunk_height;
-        uint max_w_chunk = image_w_chunks*chunk_width;
-        uint max_h_chunk = image_h_chunks*chunk_height;
-        if(unoptimized_index<max_w_chunk*max_h_chunk){
-            uint chunk_size = chunk_width*chunk_height;
-            uint large_idx = unoptimized_index/ chunk_size;
-            uint large_x = large_idx%image_w_chunks;
-            uint large_y = large_idx/image_w_chunks;
-            uint small_idx = unoptimized_index% chunk_size;
-            uint small_x = small_idx%chunk_width;
-            uint small_y = small_idx/chunk_width;
-            return ivec4(large_x, large_y, small_x, small_y);
-        }else if(unoptimized_index<image_width*max_h_chunk){
-            uint r_width = image_width - max_w_chunk;
-            uint r_optim = unoptimized_index-max_h_chunk*max_w_chunk;
-            uint small_x = r_optim%r_width + max_w_chunk;
-            uint small_y = r_optim/r_width;
-            return ivec4(-1, -1, small_x, small_y);  // special case. Small x and y are now global values.
-        }else{
-            uint r_height = image_height - max_h_chunk;
-            uint r_optim = unoptimized_index-max_h_chunk*image_width;
-            // since the height is now small, it's better to zigzag up and down to improve cache hits
-            uint small_x = r_optim/r_height;
-            uint small_y = r_optim%r_height + max_h_chunk;
-            return ivec4(-1, -1, small_x, small_y);  // special case. Small x and y are now global values.
-        }
-    }else{
+    uint image_w_chunks = int(ceil(float(image_width)/chunk_width));  //floor
+    uint image_h_chunks = int(ceil(float(image_height)/chunk_height));
+    //uint max_w_chunk = image_w_chunks*chunk_width;
+    //uint max_h_chunk = image_h_chunks*chunk_height;
+    uint chunk_size = chunk_width*chunk_height;
+    uint large_idx = unoptimized_index/ chunk_size;
+    uint large_x = large_idx%image_w_chunks;
+    uint large_y = large_idx/image_w_chunks;
+    uint small_idx = unoptimized_index% chunk_size;
+    uint small_x = small_idx%chunk_width;
+    uint small_y = small_idx/chunk_width;
+    /*if(image_w_chunks*large_x+small_x>=image_width ||
+       image_h_chunks*large_y+small_y>=image_height ){
         return ivec4(-1, -1, -1, -1);
-    }
+    }*/
+    return ivec4(large_x, large_y, small_x, small_y);
 }
 
 vec2 calculateInputCoordinates(int x, int y, int nextLevelWidth, int nextLevelHeight, int currentLevelWidth, int currentLevelHeight) {
@@ -150,6 +149,7 @@ void main() {
 
     int in_level = -1;
     int in_startIdx = -1;
+    uint chunk_start_index = 0;
     int in_width = -1;
     int in_height = -1;
 
@@ -159,86 +159,124 @@ void main() {
         sharedWeights[i] = weights[i];
     }
     barrier();
+    memoryBarrierShared();
     #endif
 
     PyramidLevel currentPyramidLevel;
-    for(int level=0;level<levels-1;level++) {
-        if(idx>=pyramidLevels[level].startIdx && idx<pyramidLevels[level+1].startIdx){
+    uint current_pyr_index = 0;
+    uint next_pyr_index;
+    for(int level=0;level<levels;level++) {
+        next_pyr_index = (
+                    int(ceil(pyramidLevels[level].width/float(chunk_width)))*chunk_width*
+                    int(ceil(pyramidLevels[level].height/float(chunk_height)))*chunk_height
+                    +current_pyr_index
+        );
+        if(idx>=current_pyr_index && idx<next_pyr_index){
             in_level = level;
             in_startIdx = pyramidLevels[level].startIdx;
             in_width = pyramidLevels[level].width;
             in_height = pyramidLevels[level].height;
             currentPyramidLevel = pyramidLevels[level];
+            chunk_start_index = current_pyr_index;
+        }
+        current_pyr_index = next_pyr_index;
+    }
+
+    ivec4 optim_xy = optimized_xy(idx-chunk_start_index, in_width, in_height);
+    ivec2 out_idx = optimized_vec2(optim_xy, in_width, in_height);
+
+    int top = optim_xy.y*int(chunk_height)-int(chunk_pad_h);
+    int left = optim_xy.x*int(chunk_width)-int(chunk_pad_w);
+
+    uint chunk_width_with_padding = chunk_width + chunk_pad_w * 2;
+    uint chunk_height_with_padding = chunk_height + chunk_pad_h * 2;
+    for (int i = int(gl_LocalInvocationID.x); i < chunk_size; i += int(gl_WorkGroupSize.x)) {
+        int ic = i % int(kernel_channels_in);
+        int iy = int((i / kernel_channels_in) % chunk_height_with_padding);
+        int ix = int((i / (kernel_channels_in * chunk_height_with_padding)) % chunk_width_with_padding);
+        int iz = int(i / (kernel_channels_in * chunk_height_with_padding * chunk_width_with_padding));
+
+        //uint chunk_index = ((iz * chunk_width_with_padding + ix) * chunk_height_with_padding + iy) * kernel_channels_in + ic;
+        uint chunk_index = i;
+        sharedChunk[chunk_index] = 0;
+
+        // Calculate the input index (assuming correct boundary checking and appropriate padding is handled)
+        int z_diff = iz - int(kernel_depth/2);
+        int in_z = in_level + z_diff;
+        int in_x = left + ix;
+        int in_y = top + iy;
+        if(in_x>=0 && in_x<in_width && in_y>=0 && in_y<in_height){
+            if(z_diff==0){
+                int in_idx = pyramidLevels[in_z].startIdx*channels+
+                             in_x * pyramidLevels[in_z].height * channels +
+                             in_y * channels +
+                             ic;
+                sharedChunk[chunk_index] = EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid,in_idx);
+                //outputPyramid[in_idx] = EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid,in_idx);
+            }else if(in_z>=0 && in_z<levels){
+                vec2 inputCoords = calculateInputCoordinates(
+                    in_x,
+                    in_y,
+                    pyramidLevels[in_z].width,
+                    pyramidLevels[in_z].height,
+                    in_width,
+                    in_height
+                );
+
+                ivec4 cornerIndices = calculate_corner_indices(pyramidLevels[in_z].startIdx, channels, inputCoords, pyramidLevels[in_z].height, ic);
+                vec4 v = SAMPLE_CORNER_VALUES(inputPyramid, cornerIndices);
+
+                sharedChunk[chunk_index] = bilinearInterpolation(
+                    fract(inputCoords.x),
+                    fract(inputCoords.y),
+                    v.z, v.w, v.x, v.y
+                );
+
+                /*int in_idx = pyramidLevels[in_level].startIdx*channels+
+                             in_x * pyramidLevels[in_level].height * channels +
+                             in_y * channels +
+                             ic;
+                outputPyramid[in_idx] = sharedChunk[chunk_index];*/
+            }
         }
     }
-    if(in_level==-1){// top level wasn't checked
-        in_level = levels-1;
-        in_startIdx = pyramidLevels[in_level].startIdx;
-        in_width = pyramidLevels[in_level].width;
-        in_height = pyramidLevels[in_level].height;
-        currentPyramidLevel = pyramidLevels[in_level];
-    }
-    ivec4 optim_xy = optimized_xy(idx-in_startIdx, in_width, in_height);
-    ivec2 out_idx = optimized_vec2(optim_xy, in_width, in_height);
+    barrier();
+    memoryBarrierShared();
+    //validated everything before here
+
     float localData[kernel_channels_out]; // ={0} is default
 
     if(out_idx.x>=0 && out_idx.y>=0 && out_idx.x<in_width && out_idx.y<in_height) {
+
         uint out_idx2 = in_startIdx * kernel_channels_out +
-                                        int((out_idx.x) * currentPyramidLevel.height * kernel_channels_out +
-                                        (out_idx.y) * kernel_channels_out);
+        out_idx.x * in_height * kernel_channels_out +
+        out_idx.y * kernel_channels_out;
 
-            for (int kd = 0; kd < kernel_depth; kd++) {
-                int d_diff = kd - int(kernel_depth / 2);
-                int next_level = in_level + d_diff;
-                if (next_level >= 0 && next_level < levels) {
-                    PyramidLevel nextPyramidLevel = pyramidLevels[next_level];
-
-                    vec2 inputCoords = calculateInputCoordinates(
-                        out_idx.x,
-                        out_idx.y,
-                        nextPyramidLevel.width,
-                        nextPyramidLevel.height,
-                        currentPyramidLevel.width,
-                        currentPyramidLevel.height
-                    );
-
-                    for (int kw = 0; kw < kernel_width; kw++) {
-                        int w_diff = kw - int(kernel_width / 2);
-                        for (int kh = 0; kh < kernel_height; kh++) {
-                            int h_diff = kh - int(kernel_height / 2);
-
-                            vec2 inputCoords2 = inputCoords + vec2(w_diff, h_diff);
-
-                            if (inputCoords2.x >= 0 && inputCoords2.x < nextPyramidLevel.width && inputCoords2.y >= 0 && inputCoords2.y < nextPyramidLevel.height) {
-                                for (int kci = 0; kci < channels; kci++) {
-                                    uint weight_idx = kd * (kernel_height * kernel_width * channels * kernel_channels_out) +
+        uint chunk_x = optim_xy.z+chunk_pad_w;
+        uint chunk_y = optim_xy.w+chunk_pad_h;
+        for (int kd = 0; kd < kernel_depth; kd++) {
+            for (int kw = 0; kw < kernel_width; kw++) {
+                int w_diff = kw - int(kernel_width / 2);
+                for (int kh = 0; kh < kernel_height; kh++) {
+                    int h_diff = kh - int(kernel_height / 2);
+                    for (int kci = 0; kci < channels; kci++) {
+                        //chunk_index and weight_idx can be broken down to each for loop, but it's probably not worth it
+                        uint chunk_index = (
+                                (kd * chunk_width_with_padding + (chunk_x+w_diff)) * chunk_height_with_padding +
+                                (chunk_y+h_diff)
+                            ) * kernel_channels_in +
+                            kci;
+                        uint weight_idx = kd * (kernel_height * kernel_width * channels * kernel_channels_out) +
                                     kh * (kernel_width * channels * kernel_channels_out) +
                                     kw * (channels * kernel_channels_out) +
                                     kci * kernel_channels_out;
-                                    for (int kco = 0; kco < kernel_channels_out; kco++) {
-                                        if (d_diff == 0) {
-                                            int in_idx = in_startIdx * channels +
-                                            int((out_idx.x + w_diff) * currentPyramidLevel.height * channels +
-                                            (out_idx.y + h_diff) * channels + kci);
-                                            localData[kco] += EXTRACT_FLOAT_FROM_INT8_ARRAY(inputPyramid, in_idx) * sharedWeights[weight_idx + kco];
-                                        } else {
-                                            ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords2, nextPyramidLevel.height, kci);
-                                            vec4 v = SAMPLE_CORNER_VALUES(inputPyramid, cornerIndices);
-
-                                            float pixel = bilinearInterpolation(
-                                                fract(inputCoords2.x),
-                                                fract(inputCoords2.y),
-                                                v.z, v.w, v.x, v.y
-                                            );
-                                            localData[kco] += pixel * sharedWeights[weight_idx + kco];
-                                        }
-                                    }
-                                }
-                            }
+                        for (int kco = 0; kco < kernel_channels_out; kco++) {
+                            localData[kco] += sharedChunk[chunk_index] * sharedWeights[weight_idx + kco];
                         }
                     }
                 }
             }
+        }
         for (int kco = 0; kco < kernel_channels_out; kco++){
             outputPyramid[out_idx2+kco] = localData[kco];
         }
