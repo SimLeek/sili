@@ -5,3 +5,4 @@ build/
 *.mp4
 .idea
 __pycache__/
+test/build_tests

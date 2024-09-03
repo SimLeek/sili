@@ -1,0 +1,61 @@
+include_directories("../sili/")
+include_directories("../sili/lib/headers")
+
+set(SOURCE_FILES
+    ../sili/lib/src/cache_info.cpp
+    ../sili/lib/src/linear.cpp
+    )
+
+set(HEADER_FILES
+    ../sili/lib/headers/cache_info.h
+    )
+
+find_package(Catch2 REQUIRED)
+
+add_executable(
+    sili_tests
+    test_cache_info.cpp
+    ${SOURCE_FILES}
+    ${HEADER_FILES}
+)
+
+# set(Python3_LIBRARY "/usr/lib/python3.11/config-3.11-x86_64-linux-gnu/libpython3.11.a")
+set(Python3_LIBRARY "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a")
+
+
+# currently, torch is broken in arch linux. Package is marked out of date. Should be fixed in a week or so.
+# pacman -S python-pytorch-opt-cuda
+# add: torch torch_cpu
+target_link_libraries(sili_tests Catch2::Catch2WithMain ${Python3_LIBRARY} )
+
+option(ENABLE_AVX "Enable AVX support" ON)
+option(ENABLE_FMA "Enable FMA support" ON)
+option(ENABLE_AVX2 "Enable AVX2 support" ON)
+
+if (ENABLE_AVX2)
+    message("Enableing AVX2, FMA, and AVX")
+    target_compile_options(sili_tests PRIVATE -march=haswell)
+elseif(ENABLE_FMA)
+    message("Enableing FMA and AVX") # and FMA
+    target_compile_options(sili_tests PRIVATE -march=bdver3)
+elseif(ENABLE_AVX)
+    message("Enableing AVX only") # and FMA
+    target_compile_options(sili_tests PRIVATE -march=sandybridge)
+endif()
+
+# Set the C++ standard (adjust as needed)
+set_target_properties(sili_tests PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
+
+set(Python3_INCLUDE_DIR "/usr/include/python3.11")
+message("Include dirs:")
+message(${Python3_INCLUDE_DIR})
+include_directories(${Python3_INCLUDE_DIR})
+
+# Enable testing
+include(CTest)
+include(Catch)
+catch_discover_tests(sili_tests)

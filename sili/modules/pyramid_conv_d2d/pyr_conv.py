@@ -170,11 +170,15 @@ def display_pyramid_from_camera(camera, conv_in):
     from displayarray import read_updates, DirectDisplay
     from sili.modules.image_pyramid_int8.image_pyramid import ToImagePyramid
     import time
+    import sys
+    sys.setswitchinterval(0.1)
 
-    #r = read_updates(camera, size=(9999, 9999))
-    #r = read_updates(camera, size=(1280,960))
-    r = read_updates(camera, size=(-1, -1), fps_limit=60)
-    gpu = GPUManager()
+    #r = read_updates(camera, size=(9999, 9999), fps_limit=120)
+    #r = read_updates(camera, size=(1280,720), fps_limit=120)
+    r = read_updates(camera, size=(640, 360), fps_limit=120)
+    #r = read_updates(camera, size=(480, 240), fps_limit=120)
+    #r = read_updates(camera, size=(1, 1), fps_limit=120)
+    gpu = GPUManager(kp.Manager(1))
     first = True
     pyr = None
     conv=None
@@ -210,6 +214,8 @@ if __name__ == '__main__':
     edge = get_edge_detector_kernel(2, 3)
     edge = edge[:, :, np.newaxis, :, :]
     display_pyramid_from_camera('../../../test/files/drone_test_vid_360.mp4', edge)
+    #display_pyramid_from_camera(0, edge)
+
     #display_pyramid(input_pyr_file, edge)  # Initial display without specific kernel
 
     # Run spatial and color tests

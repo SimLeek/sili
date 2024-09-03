@@ -16,6 +16,8 @@ from typing import Union
 
 file_path = os.path.dirname(os.path.abspath(__file__))
 
+# todo: merge this with the main conv and use gpu info to determine which algorithm to use.
+
 class PyrConv(Module):
     def __init__(self,
                  gpu: GPUManager,

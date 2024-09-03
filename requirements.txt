@@ -2,3 +2,7 @@ displayarray @ git+https://github.com/SimLeek/displayarray.git@master  # single 
 kp
 numpy==1.26.4
 opencv_python==4.9.0.80
+setuptools>=59.0
+pybind11>=2.0.0
+scipy
+torch
