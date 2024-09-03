@@ -1,0 +1,21 @@
+{ 
+    BasedOnStyle: LLVM, 
+    AlignAfterOpenBracket: Align,
+    UseTab: Never, 
+    IndentWidth: 4, 
+    TabWidth: 4, 
+    BreakBeforeBraces: Attach, 
+    #AllowShortIfStatementsOnASingleLine: false, 
+    BinPackParameters: false,
+    BinPackArguments: false,
+    ColumnLimit: 120, 
+    #AccessModifierOffset: -4, 
+    #NamespaceIndentation: All, 
+    #FixNamespaceComments: false,
+    #IndentCaseLabels: true,
+    AllowAllParametersOfDeclarationOnNextLine: false,
+    PenaltyReturnTypeOnItsOwnLine: 99999999,
+    #BreakAfterReturnType: false,
+    # BreakTemplateDeclarations: No,
+
+}

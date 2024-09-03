@@ -1,21 +1,8 @@
 #include <omp.h>
 #include <thread>
 #include <algorithm>
-#include <type_traits>
-
-struct csf_struct  // compressed sparse fiber struct
-{
-    int* ptrptrs;
-    int* col_indices;  // col indices assuming CSR. ptrptrs will point to the indices of these as well as ptrs
-
-    int* ptrs;
-    int* fiber_indices;
-
-    float* values;
-    int nnz;  // total number of values
-    int nnf;  // total number of fibers with any values in them
-    int max_index;  // max value possible in indices. If csr: num_col. -1 if
-};
+#include <vector>
+#include "../headers/csf.h"
 
 template <class T>
 std::vector<size_t> fullScanSizes(const std::vector<std::vector<T>>& vec) {
@@ -34,9 +21,9 @@ std::vector<size_t> fullScanSizes(const std::vector<std::vector<T>>& vec) {
 }
 
 template <class T>
-std::vector<size_t> fullScanSizes2(const std::vector<std::vector<std::vector<T>>>& vec) {
-    std::vector<size_t> fullScans(vec.size());
-    for(i=0; i<vec.size();i++){
+std::vector<std::vector<size_t>> fullScanSizes2(const std::vector<std::vector<std::vector<T>>>& vec) {
+    std::vector<std::vector<size_t>> fullScans(vec.size());
+    for(int i=0; i<vec.size();i++){
         fullScans[i] = fullScanSizes(vec[i]);
     }
     return fullScans;
@@ -75,7 +62,7 @@ std::vector<csf_struct> conv2d(
 
         std::vector<int> start_row(num_cpus, -1);
 
-        std::vector<std::vector<std::vector<int>>> output_col_indices_chunks(num_cpus, std::vector<std::vector<std::vector<int>>>());
+        std::vector<std::vector<std::vector<int>>> output_col_indices_chunks(num_cpus, std::vector<std::vector<int>>());
         std::vector<std::vector<std::vector<std::vector<int>>>> output_channel_indices_chunks(num_cpus, std::vector<std::vector<std::vector<int>>>());
         std::vector<std::vector<std::vector<std::vector<float>>>> output_values_chunks(num_cpus, std::vector<std::vector<std::vector<float>>>());
 
@@ -98,27 +85,27 @@ std::vector<csf_struct> conv2d(
                 if(int(oi/input_height)!=oiy){
                     oiy = int(oi/input_height);  // output index y
                     if(start_row[tid]==-1){
-                        start_row = oiy;
+                        start_row[tid] = oiy;
                     }
                     // set up memory for this row
                     output_col_indices.push_back(std::vector<int>());
                     output_channel_indices.push_back(std::vector<std::vector<int>>());
                     output_values.push_back(std::vector<std::vector<float>>());
 
-                    for(int i=0; i++; i<vip.size()){
+                    for(int i=0; i<vip_col.size(); i++){
                         int vip_row = oiy+(i-kh_diff_n);
-                        vip_col[i] = input_sparse_images[oiy].ptrptrs[vip_row];  // vip_col
+                        vip_col[i] = input_sparse_images[batch].ptrptrs[vip_row];  // vip_col
                     }
                 }
-                int oix = oi%oih;  // output index x
+                int oix = oi%oiy;  // output index x
 
                 float out_val = 0;
-                bool made_this_fiber = False;
+                bool made_this_fiber = false;
 
-                bool check_next = True;
+                bool check_next = true;
                 while(check_next){
-                    check_next = False; // because I don't like the aesthetics of do while loops
-                    for(int i=0; i++; i<vip.size()){
+                    check_next = false; // because I don't like the aesthetics of do while loops
+                    for(int i=0; i<vip_col.size(); i++){
                         // vip_end[i] = vip[i+1]; <-- this is why vip.size() is kernel_height+1: no need for an end array
                         if(i==0){
                             continue; // end pointer not set
@@ -126,36 +113,36 @@ std::vector<csf_struct> conv2d(
                         else if(vip_col[i-1]==vip_col[i]){
                             continue; // input row has no more items
                         }
-                        else if (input_sparse_images[oiy].col_indices[vip_col[i-1]]<oix-kw_diff_n){
+                        else if (input_sparse_images[batch].col_indices[vip_col[i-1]]<oix-kw_diff_n){
                             vip_col[i-1]++;
-                            check_next = True;
+                            check_next = true;
                             continue;
                         }
-                        else if (input_sparse_images[oiy].col_indices[vip_col[i-1]]>=oix+kw_diff_p){
+                        else if (input_sparse_images[batch].col_indices[vip_col[i-1]]>=oix+kw_diff_p){
                             continue; // input row items are all beyond kernel input area
                         }
                         else{ // perform convolution part
-                            int input_channel_ptr = input_sparse_images[oiy].ptrs[vip_col[i-1]];
-                            int input_channel_index = input_sparse_images[oiy].fiber_indices[fiber_ptr];
-                            int input_channel_value = input_sparse_images[oiy].values[fiber_ptr];
+                            int input_channel_ptr = input_sparse_images[batch].ptrs[vip_col[i-1]];
+                            int input_channel_index = input_sparse_images[batch].fiber_indices[input_channel_ptr];
+                            int input_channel_value = input_sparse_images[batch].values[input_channel_ptr];
 
                             for(int oci=0; oci<output_channels; oci++){
                                 if(!made_this_fiber){
-                                    output_col_indices.back().push_back(input_sparse_images[oiy].col_indices[vip_col[i-1]]);
+                                    output_col_indices.back().push_back(input_sparse_images[batch].col_indices[vip_col[i-1]]);
                                     output_channel_indices.back().push_back(std::vector<int>());
                                     output_values.back().push_back(std::vector<float>());
-                                    made_this_fiber = True;
+                                    made_this_fiber = true;
                                 }
 
                                 int kernel_H = i-1;
-                                int kernel_W = input_sparse_images[oiy].col_indices[vip_col[i-1]]-oix;
+                                int kernel_W = input_sparse_images[batch].col_indices[vip_col[i-1]]-oix;
 
 
                                 // kernel format will be HWOI due to the way these loops had to be designed.
                                 // image format should also be NHWC
                                 //  matching format to for loops = fewer cache misses
                                 float out_val = W[
-                                        kernel_H*input_width*output_channels*input_channels
+                                        kernel_H*input_width*output_channels*input_channels + 
                                         kernel_W*output_channels*input_channels +
                                         oci*input_channels +
                                         input_channel_index
@@ -168,19 +155,19 @@ std::vector<csf_struct> conv2d(
                                 }
 
                                 vip_col[i-1]++;
-                                check_next = True;
+                                check_next = true;
                             }
                         }
                     }
                 }
-                check_next = True;
+                check_next = true;
                 while(check_next){
-                    check_next = False; // because I don't like the aesthetics of do while loops
-                    for(int i=0; i++; i<vip.size()){
+                    check_next = false; // because I don't like the aesthetics of do while loops
+                    for(int i=0; i<vip_col.size(); i++){
                         // vip_end[i] = vip[i+1]; <-- this is why vip.size() is kernel_height+1: no need for an end array
-                        if (input_sparse_images[oiy].col_indices[vip_col[i]]>oix-kw_diff_n+1){ // if greater than first index of next convolution
+                        if (input_sparse_images[batch].col_indices[vip_col[i]]>oix-kw_diff_n+1){ // if greater than first index of next convolution
                             vip_col[i-1]--;
-                            check_next = True;
+                            check_next = true;
                             continue; // input row items are all beyond kernel input area
                         }
                     }
@@ -213,12 +200,12 @@ std::vector<csf_struct> conv2d(
         auto vec_col_assign_locs = fullScanSizes2(output_col_indices_chunks);
 
         #pragma omp parallel for reduction(+:nnf, nnc)
-        for(int i=0; i<vec_channel_assign_locs.size()){
+        for(int i=0; i<vec_channel_assign_locs.size(); i++){
             for(int j=0; j<vec_channel_assign_locs[i].size();j++){
                 // reserve *additional* space for output, as different threads may have already reserved some space
-                out_col_idx[start_row[i]+j].resize(out_col_idx[start_row[i]+j].size()+vec_col_assign_locs[i][j].back(), 0);
-                out_chan_idx[start_row[i]+j].resize(out_chan_idx[start_row[i]+j].size()+vec_channel_assign_locs[i][j].back(), 0);
-                out_val[start_row[i]+j].resize(out_val[start_row[i]+j].size()+vec_channel_assign_locs[i][j].back(), 0);
+                out_col_idx[start_row[i]+j].resize(out_col_idx[start_row[i]+j].size()+vec_col_assign_locs[i][j], 0);
+                out_chan_idx[start_row[i]+j].resize(out_chan_idx[start_row[i]+j].size()+vec_channel_assign_locs[i][j]);
+                out_val[start_row[i]+j].resize(out_val[start_row[i]+j].size()+vec_channel_assign_locs[i][j]);
                 nnf += vec_channel_assign_locs[i][j].back();
                 nnc += vec_col_assign_locs[i][j].back();
             }
@@ -229,7 +216,7 @@ std::vector<csf_struct> conv2d(
             int tid = omp_get_thread_num(); // Get thread ID
             int start = vec_assign_locs[tid];
             //int end = vec_assign_locs[tid+1];
-            if (tid!=0 && start_row[tid-1]+vec_channel_assign_locs[tid-1].size()==start_row[tid]){
+            if (tid!=0 && start_row[tid-1]+vec_channel_assign_locs[tid-1]==start_row[tid]){
                 start+=vec_channel_assign_locs[tid-1].back().size();
             }else{
                 start = 0;
