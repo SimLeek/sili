@@ -1,11 +1,11 @@
-#include "cache_info.h"
+#include "../headers/cache_info.h"
 
-#include <iostream>
-#include <vector>
 #include <cstring>
+#include <iostream>
 
 // Platform-specific includes
 #ifdef _WIN32
+#include <vector>
 #include <windows.h>
 #else
 #include <fstream>
@@ -21,12 +21,13 @@ size_t get_cache_line_size() {
 #ifdef _WIN32
     DWORD buffer_size = 0;
     GetLogicalProcessorInformation(nullptr, &buffer_size);
-    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(buffer_size / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(buffer_size /
+                                                             sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
     GetLogicalProcessorInformation(buffer.data(), &buffer_size);
 
-    for (const auto& info : buffer) {
+    for (const auto &info : buffer) {
         if (info.Relationship == RelationCache && info.Cache.Level == 1) {
-            cache_line_size = info.Cache.LineSize;  // Use LineSize instead of Size for cache line size
+            cache_line_size = info.Cache.LineSize; // Use LineSize instead of Size for cache line size
             break;
         }
     }
@@ -39,7 +40,9 @@ size_t get_cache_line_size() {
         }
         cache_info.close();
     } else {
-        std::cerr << "Error: Unable to read cache line size from /sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size" << std::endl;
+        std::cerr << "Error: Unable to read cache line size from "
+                     "/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size"
+                  << std::endl;
     }
 #elif defined(__APPLE__)
     size_t size = sizeof(cache_line_size);
@@ -58,10 +61,11 @@ size_t get_l1_cache_size() {
     // Windows implementation
     DWORD buffer_size = 0;
     GetLogicalProcessorInformation(nullptr, &buffer_size);
-    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(buffer_size / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(buffer_size /
+                                                             sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
     GetLogicalProcessorInformation(buffer.data(), &buffer_size);
 
-    for (const auto& info : buffer) {
+    for (const auto &info : buffer) {
         if (info.Relationship == RelationCache && info.Cache.Level == 1) {
             cache_size = info.Cache.Size;
             break;

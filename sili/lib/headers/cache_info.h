@@ -1,7 +1,7 @@
 #ifndef CACHE_INFO_H
 #define CACHE_INFO_H
 
-#include <cstddef>  // for size_t
+#include <cstddef> // for size_t
 
 extern size_t get_cache_line_size();
 

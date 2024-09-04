@@ -13,8 +13,7 @@ struct csr_struct {
     int _reserved_indices_and_values = 0;
 
     csr_struct()
-        : ptrs(nullptr), indices(nullptr), values(nullptr), nnz(0), rows(0), cols(0),
-          _reserved_indices_and_values(0) {}
+        : ptrs(nullptr), indices(nullptr), values(nullptr), nnz(0), rows(0), cols(0), _reserved_indices_and_values(0) {}
 
     csr_struct(int *p, int *ind, float *val, int non_zero, int num_p, int max_idx, int reserved)
         : ptrs(p), indices(ind), values(val), nnz(non_zero), rows(num_p), cols(max_idx),

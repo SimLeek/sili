@@ -1,4 +1,5 @@
 #include "../headers/csr.h"
+#include "../headers/scan.h"
 #include <algorithm>
 #include <cstddef>
 #include <functional>
@@ -7,28 +8,6 @@
 #include <random>
 #include <thread>
 #include <vector>
-
-/**
- * Computes a cumulative sum of the sizes of inner vectors using OpenMP.
- *
- * @tparam T The type of elements in the inner vectors.
- * @param vec_of_vec A vector of vectors of type T.
- * @return A vector of size_t with cumulative sizes, one element larger than the input.
- */
-template <class T> std::vector<size_t> fullScanSizes(const std::vector<std::vector<T>> &vec_of_vec) {
-    std::vector<size_t> fullScan(vec_of_vec.size() + 1);
-    fullScan[0] = 0;
-
-    int scan_a = 0;
-#pragma omp simd reduction(inscan, + : scan_a)
-    for (int i = 0; i < vec_of_vec.size(); i++) {
-        fullScan[i + 1] = scan_a;
-#pragma omp scan inclusive(scan_a)
-        scan_a += vec_of_vec[i].size();
-    }
-
-    return fullScan;
-}
 
 /* #region Linear Sparse IO Fwd */
 inline void _do_linear_sidlso_fwd(int num_cpus,
@@ -65,6 +44,7 @@ inline void _do_linear_sidlso_fwd(int num_cpus,
 }
 
 inline void _assign_spv_chunks_to_batch(int batch,
+                                        int num_cpus,
                                         std::vector<size_t> &vec_assign_locs,
                                         std::vector<std::vector<int>> &out_idx,
                                         std::vector<std::vector<float>> &out_val,
@@ -74,7 +54,7 @@ inline void _assign_spv_chunks_to_batch(int batch,
     out_idx[batch].reserve(vec_assign_locs.back());
     out_val[batch].reserve(vec_assign_locs.back());
 
-#pragma omp parallel num_threads(num_cpus) reduction( : +nnz)
+#pragma omp parallel num_threads(num_cpus) reduction(+ : nnz)
     {
         int tid = omp_get_thread_num(); // Get thread ID
         int start = vec_assign_locs[tid];
@@ -110,7 +90,7 @@ csr_struct linear_sidlso(int batch_size,
         auto vec_assign_locs = fullScanSizes(row_indices_chunks);
 
         _assign_spv_chunks_to_batch(
-            batch, vec_assign_locs, out_idx, out_val, row_indices_chunks, row_values_chunks, nnz);
+            batch, num_cpus, vec_assign_locs, out_idx, out_val, row_indices_chunks, row_values_chunks, nnz);
     }
 
     auto cs2 = convert_vov_to_cs2(&out_idx, &out_val, nullptr, output_size, batch_size, nnz);
@@ -212,7 +192,7 @@ class CSRMask {
           index_dist(0, csr_matrix.rows * csr_matrix.cols - 1) {}
 
     // Method to add a small random value to each CSR value
-    void addRandomValue(float min=0, float max=2 * std::numbers::pi / 50000) {
+    void addRandomValue(float min = 0, float max = 2 * std::numbers::pi / 50000) {
         std::uniform_real_distribution<float> small_value_dist(min, max);
         for (int i = 0; i < csrMatrix.nnz; ++i) {
             csrMatrix.values[i] += small_value_dist(generator);
