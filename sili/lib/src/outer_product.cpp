@@ -1,4 +1,4 @@
-#include "../headers/csr.h"
+#include "csr.h"
 #include <omp.h>
 #include <thread>
 #include <vector>
@@ -47,7 +47,7 @@ std::vector<csr_struct> outer_product(int batches, int a_size, int b_size, const
         }
 
         // Convert the result to CSR format for the current batch
-        result_batches.emplace_back(convert_vov_to_cs2(&result_indices, &result_values, nullptr, a_size, b_size, nnz));
+        result_batches.emplace_back(convert_vov_to_csr(&result_indices, &result_values, nullptr, a_size, b_size, nnz));
     }
 
     return result_batches;
@@ -150,6 +150,8 @@ void outer_product_backwards_a(int batches,
     }
 }
 
+// outer product mask for backpropogating into the outer product.
+// use either the the a/b csr arrays with zeroed out values or CSRMask's random mask for a_grad and b_grad
 std::vector<csr_struct> build_outer_product_mask(int batches,
                                                  int a_size,
                                                  int b_size,
@@ -193,7 +195,7 @@ std::vector<csr_struct> build_outer_product_mask(int batches,
         }
 
         // Convert the result to CSR format for the current batch
-        result_batches.emplace_back(convert_vov_to_cs2(&result_indices, nullptr, nullptr, a_size, b_size, nnz));
+        result_batches.emplace_back(convert_vov_to_csr(&result_indices, nullptr, nullptr, a_size, b_size, nnz));
     }
 
     return result_batches;

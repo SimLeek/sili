@@ -1,4 +1,4 @@
-#include "../headers/csf.h"
+#include "csf.h"
 #include <omp.h>
 
 csf_struct convert_vovov_to_csf(const std::vector<std::vector<int>> *col_indices,

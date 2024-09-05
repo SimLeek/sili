@@ -1,13 +1,15 @@
-#include "../headers/csr.h"
-#include "../headers/scan.h"
+#include "csr.h"
+#include "scan.h"
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <numbers>
 #include <omp.h>
 #include <random>
 #include <thread>
 #include <vector>
+#include <cstring>
 
 /* #region Linear Sparse IO Fwd */
 inline void _do_linear_sidlso_fwd(int num_cpus,
@@ -72,8 +74,7 @@ csr_struct linear_sidlso(int batch_size,
                          csr_struct &input_csr,
                          float *W,
                          float eps = std::numeric_limits<float>::epsilon()) {
-    const auto num_cpus = std::thread::hardware_concurrency(); // Get the number of hardware
-                                                               // threads
+    const auto num_cpus = std::thread::hardware_concurrency();
 
     std::vector<std::vector<int>> out_idx(batch_size);
     std::vector<std::vector<float>> out_val(batch_size);
@@ -93,8 +94,8 @@ csr_struct linear_sidlso(int batch_size,
             batch, num_cpus, vec_assign_locs, out_idx, out_val, row_indices_chunks, row_values_chunks, nnz);
     }
 
-    auto cs2 = convert_vov_to_cs2(&out_idx, &out_val, nullptr, output_size, batch_size, nnz);
-    return cs2;
+    auto csr = convert_vov_to_csr(&out_idx, &out_val, nullptr, output_size, batch_size, nnz);
+    return csr;
 }
 /* #endregion */
 
@@ -174,6 +175,30 @@ void linear_backward_sidlso(int batch_size,
     }
 }
 /* #endregion */
+
+class WeightGradUpdater {
+public:
+    explicit WeightGradUpdater(size_t input_size, size_t output_size) : w_grad(new float[input_size*output_size]) {
+        memset(w_grad.get(), 0, sizeof(float)*input_size*output_size);
+    }
+
+    ~WeightGradUpdater() = default;
+
+    void update_weight_gradients(float out_wgrad, int output_index, int input_index) {
+        w_grad[output_index* input_size_ + input_index] += out_wgrad;
+    }
+
+    std::unique_ptr<float[]> w_grad;
+private:
+    size_t input_size_;
+};
+
+std::function<void(float, int, int)> get_dense_W_grad_callback(std::shared_ptr<WeightGradUpdater> updater) {
+    return [updater](float out_wgrad, int output_index, int input_index) {
+        updater->update_weight_gradients(out_wgrad, output_index, input_index);
+    };
+}
+
 
 /* #region Linear Sparse IO Mask */
 

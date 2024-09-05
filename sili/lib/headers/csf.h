@@ -1,5 +1,5 @@
-#ifndef __CSR__H_
-#define __CSR__H_
+#ifndef __CSF__H_
+#define __CSF__H_
 #include <vector>
 
 struct csf_struct // compressed sparse fiber struct

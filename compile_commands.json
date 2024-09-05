@@ -1,0 +1,20 @@
+[
+{
+  "directory": "/home/simleek/code/SILi/test/build_tests",
+  "command": "/usr/bin/clang++ -I/home/simleek/code/SILi/test/../sili -I/home/simleek/code/SILi/test/../sili/lib/headers -I/home/simleek/code/SILi/test/../sili/lib/src -I/usr/include/python3.11 -g -std=c++20 -march=haswell -o CMakeFiles/sili_tests.dir/test_cache_info.cpp.o -c /home/simleek/code/SILi/test/test_cache_info.cpp",
+  "file": "/home/simleek/code/SILi/test/test_cache_info.cpp",
+  "output": "CMakeFiles/sili_tests.dir/test_cache_info.cpp.o"
+},
+{
+  "directory": "/home/simleek/code/SILi/test/build_tests",
+  "command": "/usr/bin/clang++ -I/home/simleek/code/SILi/test/../sili -I/home/simleek/code/SILi/test/../sili/lib/headers -I/home/simleek/code/SILi/test/../sili/lib/src -I/usr/include/python3.11 -g -std=c++20 -march=haswell -o CMakeFiles/sili_tests.dir/home/simleek/code/SILi/sili/lib/src/cache_info.cpp.o -c /home/simleek/code/SILi/sili/lib/src/cache_info.cpp",
+  "file": "/home/simleek/code/SILi/sili/lib/src/cache_info.cpp",
+  "output": "CMakeFiles/sili_tests.dir/home/simleek/code/SILi/sili/lib/src/cache_info.cpp.o"
+},
+{
+  "directory": "/home/simleek/code/SILi/test/build_tests",
+  "command": "/usr/bin/clang++ -I/home/simleek/code/SILi/test/../sili -I/home/simleek/code/SILi/test/../sili/lib/headers -I/home/simleek/code/SILi/test/../sili/lib/src -I/usr/include/python3.11 -g -std=c++20 -march=haswell -o CMakeFiles/sili_tests.dir/home/simleek/code/SILi/sili/lib/src/linear.cpp.o -c /home/simleek/code/SILi/sili/lib/src/linear.cpp",
+  "file": "/home/simleek/code/SILi/sili/lib/src/linear.cpp",
+  "output": "CMakeFiles/sili_tests.dir/home/simleek/code/SILi/sili/lib/src/linear.cpp.o"
+}
+]

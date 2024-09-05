@@ -1,13 +1,27 @@
+cmake_minimum_required(VERSION 3.5.0)
+project(sili_tests)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+set(CMAKE_INCLUDE_HEADERS_IN_COMPILE_COMMANDS ON)
+
 include_directories("../sili/")
 include_directories("../sili/lib/headers")
+include_directories("../sili/lib/src")
 
 set(SOURCE_FILES
     ../sili/lib/src/cache_info.cpp
     ../sili/lib/src/linear.cpp
+    ../sili/lib/src/outer_product.cpp
+    ../sili/lib/src/csr.cpp
+    ../sili/lib/src/csf.cpp
+    ../sili/lib/src/conv2d.cpp
     )
 
 set(HEADER_FILES
     ../sili/lib/headers/cache_info.h
+    ../sili/lib/headers/csr.h
+    ../sili/lib/headers/csf.h
+    ../sili/lib/headers/scan.h
     )
 
 find_package(Catch2 REQUIRED)
@@ -15,6 +29,7 @@ find_package(Catch2 REQUIRED)
 add_executable(
     sili_tests
     test_cache_info.cpp
+    test_linear.cpp
     ${SOURCE_FILES}
     ${HEADER_FILES}
 )

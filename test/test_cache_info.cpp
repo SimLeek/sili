@@ -5,9 +5,6 @@
 #define REQUIRE_MESSAGE(cond, msg) do { INFO(msg); REQUIRE(cond); } while((void)0, 0)
 #define CHECK_MESSAGE(cond, msg) do { INFO(msg); CHECK(cond); } while((void)0, 0)
 
-
-// Include the header files that contain your functions
-// Assuming your functions are declared in these files:
 #include "cache_info.h"
 
 TEST_CASE("L1 Cache size retrieval", "[cache]") {

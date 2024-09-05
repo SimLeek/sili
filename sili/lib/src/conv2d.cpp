@@ -1,10 +1,12 @@
-#include "../headers/csf.h"
-#include "../headers/scan.h"
+#include "csf.h"
+#include "scan.h"
 #include <algorithm>
 #include <functional>
 #include <omp.h>
 #include <thread>
 #include <vector>
+
+// todo: make a conv1d based off this, for sound and tokenization. conv3d would be for sonar/radar but the idea of writing that feels terrifying rn.
 
 /* #region Sparse IO Conv2D Forward */
 
@@ -51,7 +53,8 @@ inline void _do_sparse_io_conv2d_convolution(int batch,
                                              std::vector<csf_struct> &input_sparse_images,
                                              std::vector<std::vector<int>> &output_col_indices,
                                              std::vector<std::vector<std::vector<int>>> &output_channel_indices,
-                                             std::vector<std::vector<std::vector<float>>> &output_values) {
+                                             std::vector<std::vector<std::vector<float>>> &output_values,
+                                             float eps) {
     bool check_next = true;
     while (check_next) {
         check_next = false; // because I don't like the aesthetics of do while loops
@@ -69,9 +72,8 @@ inline void _do_sparse_io_conv2d_convolution(int batch,
             } else if (input_sparse_images[batch].col_indices[vip_col[i - 1]] >= oix + kw_diff_p) {
                 continue; // input row items are all beyond kernel input area
             } else {      // perform convolution part
-                int input_channel_ptr = input_sparse_images[batch].ptrs[vip_col[i - 1]];
-                int input_channel_index = input_sparse_images[batch].fiber_indices[input_channel_ptr];
-                int input_channel_value = input_sparse_images[batch].values[input_channel_ptr];
+                int input_channel_ptr_start = input_sparse_images[batch].ptrs[vip_col[i - 1]];
+                int input_channel_ptr_end = input_sparse_images[batch].ptrs[vip_col[i - 1]+1];
 
                 for (int oci = 0; oci < output_channels; oci++) {
                     if (!made_this_fiber) {
@@ -86,16 +88,23 @@ inline void _do_sparse_io_conv2d_convolution(int batch,
 
                     // kernel format will be HWOI due to the way these loops had to be designed.
                     // image format should also be NHWC
-                    //  matching format to for loops = fewer cache misses
-                    float out_val =
-                        W[kernel_H * input_width * output_channels * input_channels +
-                          kernel_W * output_channels * input_channels + oci * input_channels + input_channel_index] *
-                        input_channel_value;
-                    if (output_channel_indices.back().back().back() != oci) {
-                        output_channel_indices.back().back().push_back(oci);
-                        output_values.back().back().push_back(out_val);
-                    } else {
-                        output_values.back().back().back() += out_val;
+                    //  matching format to for loops = fewer cache misses = more speed
+                    float out_val = 0;
+                    for(int icp=input_channel_ptr_start;icp<input_channel_ptr_end;icp++){
+                        int input_channel_index = input_sparse_images[batch].fiber_indices[icp];
+                        int input_channel_value = input_sparse_images[batch].values[icp];
+                        out_val +=
+                            W[kernel_H * input_width * output_channels * input_channels +
+                            kernel_W * output_channels * input_channels + oci * input_channels + input_channel_index] *
+                            input_channel_value;
+                    }
+                    if(out_val>eps){
+                        if (output_channel_indices.back().back().back() != oci) {
+                            output_channel_indices.back().back().push_back(oci);
+                            output_values.back().back().push_back(out_val);
+                        } else {
+                            output_values.back().back().back() += out_val;
+                        }
                     }
 
                     vip_col[i - 1]++;
@@ -128,6 +137,7 @@ inline void _move_sparse_io_conv2d_column_ptrs_back(int batch,
     }
 }
 
+//case: input fiber 1 gives +1 to output channel, input fiber 2 gives -1, result is 0, so it needs to be removed.
 inline void _conv2d_remove_zero_outputs(std::vector<std::vector<int>> &output_col_indices,
                                         std::vector<std::vector<std::vector<int>>> &output_channel_indices,
                                         std::vector<std::vector<std::vector<float>>> &output_values,
@@ -295,7 +305,8 @@ std::vector<csf_struct> conv2d(int batch_size,
                                                  input_sparse_images,
                                                  output_col_indices,
                                                  output_channel_indices,
-                                                 output_values);
+                                                 output_values,
+                                                 eps);
 
                 // SECTION: move vertical column pointers back
                 _move_sparse_io_conv2d_column_ptrs_back(batch, kw_diff_n, oix, input_sparse_images, vip_col);
@@ -654,6 +665,8 @@ void conv2d_backward_input(int batch_size,
 }
 /* #endregion */
 
+/* #region Sparse IO Conv2D Backwards Mask */
+
 // mask generation:
 //   create 1 hot kernel: 1 in kernel_widthxkernel_height, 1 in kernel_channels_inxkernel_channels_out: channels 1s
 
@@ -939,3 +952,4 @@ std::vector<csf_struct> conv2d_grad_mask_gen(int batch_size,
 
     return output_sparse_images;
 }
+/* #endregion */

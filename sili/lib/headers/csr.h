@@ -23,7 +23,7 @@ struct csr_struct {
         : ptrs(p), indices(ind), values(val), nnz(non_zero), rows(num_p), cols(max_idx) {}
 };
 
-csr_struct convert_vov_to_cs2(const std::vector<std::vector<int>> *indices,
+csr_struct convert_vov_to_csr(const std::vector<std::vector<int>> *indices,
                               const std::vector<std::vector<float>> *values,
                               const std::vector<std::vector<float>> *connections,
                               int num_col,
