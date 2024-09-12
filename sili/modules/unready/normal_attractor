@@ -1,0 +1,2 @@
+# calc normal distribution in parallel from all neurons: normal is of average/variance of position, with positions weighted by neuron values
+# determine where a specific neuron is in terms of std.dev. or variance on that normal distribution and reward if near center and punish if near edge

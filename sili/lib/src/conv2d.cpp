@@ -98,7 +98,7 @@ inline void _do_sparse_io_conv2d_convolution(int batch,
                             kernel_W * output_channels * input_channels + oci * input_channels + input_channel_index] *
                             input_channel_value;
                     }
-                    if(out_val>eps){
+                    if(std::abs(out_val)>eps){
                         if (output_channel_indices.back().back().back() != oci) {
                             output_channel_indices.back().back().push_back(oci);
                             output_values.back().back().push_back(out_val);
@@ -772,7 +772,7 @@ inline void _do_conv2d_grad_mask_gen_convolution(int batch,
                         W[kernel_H * input_width * output_channels * input_channels +
                           kernel_W * output_channels * input_channels + oci * input_channels + input_channel_index] *
                         input_channel_value;
-                    if (out_val > eps) {
+                    if (std::abs(out_val) > eps) {
                         if (output_channel_indices.back().back().back() != oci) {
                             output_channel_indices.back().back().push_back(oci);
                             // output_values.back().back().push_back(out_val);

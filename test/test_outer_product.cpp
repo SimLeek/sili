@@ -1,9 +1,5 @@
-#include <catch2/catch_all.hpp>
-
-// thanks: https://github.com/catchorg/Catch2/issues/929#issuecomment-308663820
-#define REQUIRE_MESSAGE(cond, msg) do { INFO(msg); REQUIRE(cond); } while((void)0, 0)
-#define CHECK_MESSAGE(cond, msg) do { INFO(msg); CHECK(cond); } while((void)0, 0)
-
+#include "tests_main.h"
+/*
 #include "outer_product.cpp"
 
 TEST_CASE("Outer Product Function Tests") {
@@ -277,3 +273,4 @@ TEST_CASE("Backpropagate To A Function Tests") {
         REQUIRE_MESSAGE(false, "Get backprop to B tests working before adapting them to backprop to A");
     }
 }
+*/

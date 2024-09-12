@@ -1,6 +1,7 @@
 #ifndef __CSF__H_
 #define __CSF__H_
-#include <vector>
+//#include <vector>
+#include "unique_vector.hpp"
 
 struct csf_struct // compressed sparse fiber struct
 {
@@ -35,9 +36,9 @@ struct csf_struct // compressed sparse fiber struct
           nnz(nnz), nnf(nnf), rows(_rows), cols(_cols), fibers(_fibers) {}
 };
 
-csf_struct convert_vovov_to_csf(const std::vector<std::vector<int>> *col_indices,
-                                const std::vector<std::vector<std::vector<int>>> *fiber_indices,
-                                const std::vector<std::vector<std::vector<float>>> *fiber_values,
+csf_struct convert_vovov_to_csf(const sili::unique_vector<sili::unique_vector<int>> *col_indices,
+                                const sili::unique_vector<sili::unique_vector<sili::unique_vector<int>>> *fiber_indices,
+                                const sili::unique_vector<sili::unique_vector<sili::unique_vector<float>>> *fiber_values,
                                 int num_row,
                                 int num_col,
                                 int num_fiber,

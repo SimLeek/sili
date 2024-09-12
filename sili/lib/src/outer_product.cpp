@@ -3,10 +3,11 @@
 #include <thread>
 #include <vector>
 
-std::vector<csr_struct> outer_product(int batches, int a_size, int b_size, const csr_struct &a, const csr_struct &b) {
+template<class SIZE_TYPE, class VALUE_TYPE>
+std::vector<csr_struct<SIZE_TYPE, VALUE_TYPE>> outer_product(int batches, int a_size, int b_size, const csr_struct<SIZE_TYPE, VALUE_TYPE> &a, const csr_struct<SIZE_TYPE, VALUE_TYPE> &b) {
     // output is a list of length batches of CSRs of size a_size by b_size
     int num_cpus = std::thread::hardware_concurrency();
-    std::vector<csr_struct> result_batches;
+    std::vector<csr_struct<SIZE_TYPE, VALUE_TYPE>> result_batches;
 
     for (int batch = 0; batch < batches; ++batch) {
         int a_start = a.ptrs[batch];

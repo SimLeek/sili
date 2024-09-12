@@ -1,6 +1,6 @@
 #include "csf.h"
 #include <omp.h>
-
+/*
 csf_struct convert_vovov_to_csf(const std::vector<std::vector<int>> *col_indices,
                                 const std::vector<std::vector<std::vector<int>>> *fiber_indices,
                                 const std::vector<std::vector<std::vector<float>>> *fiber_values,
@@ -69,4 +69,4 @@ csf_struct convert_vovov_to_csf(const std::vector<std::vector<int>> *col_indices
                    num_fiber);
 
     return csf;
-}
+}*/

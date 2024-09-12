@@ -1,9 +1,6 @@
-#include <catch2/catch_all.hpp>
 #include <iostream>
 
-// thanks: https://github.com/catchorg/Catch2/issues/929#issuecomment-308663820
-#define REQUIRE_MESSAGE(cond, msg) do { INFO(msg); REQUIRE(cond); } while((void)0, 0)
-#define CHECK_MESSAGE(cond, msg) do { INFO(msg); CHECK(cond); } while((void)0, 0)
+#include "tests_main.h"
 
 #include "cache_info.h"
 
