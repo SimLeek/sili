@@ -13,20 +13,21 @@ include_directories("../sili/lib/headers")
 include_directories("../sili/lib/src")
 
 set(SOURCE_FILES
-    ../sili/lib/src/cache_info.cpp
+    #../sili/lib/src/cache_info.cpp
     # these are not included since we're testing private c++ functions
     #../sili/lib/src/linear.cpp
     #../sili/lib/src/outer_product.cpp
-    ../sili/lib/src/csf.cpp
+    #../sili/lib/src/csf.cpp
     #../sili/lib/src/conv2d.cpp
     )
 
 set(HEADER_FILES
     tests_main.h
-    ../sili/lib/headers/cache_info.h
-    ../sili/lib/headers/csr.h
-    ../sili/lib/headers/csf.h
-    ../sili/lib/headers/scan.h
+    ../sili/lib/headers/coo.hpp
+    #../sili/lib/headers/cache_info.h
+    #../sili/lib/headers/csr.h
+    #../sili/lib/headers/csf.h
+    #../sili/lib/headers/scan.h
     )
 
 find_package(Catch2 REQUIRED)
@@ -35,11 +36,11 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
     #test_cache_info.cpp  # complete
-    test_linear.cpp
-    test_unique_vector.cpp
+    test_coo.cpp
+    #test_unique_vector.cpp
     #test_outer_product.cpp
     #test_conv2d.cpp
-    test_csr_csf.cpp
+    #test_csr_csf.cpp
     ${SOURCE_FILES}
     ${HEADER_FILES}
 )

@@ -183,6 +183,12 @@ bool almost_equal(const sili::unique_vector<T>& a, const sili::unique_vector<U>&
     return true; // All elements are approximately equal within the epsilon tolerance
 }
 
+// Helper function to convert arrays to vectors
+template <typename T>
+std::vector<T> vec(T* arr, size_t size) {
+    return std::vector<T>(arr, arr + size);
+}
+
 #define CHECK_VECTOR_EQUAL(a, b) \
     do { \
         INFO(vector_diff_string(a, b, 0)); \

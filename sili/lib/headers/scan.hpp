@@ -1,8 +1,6 @@
-#ifndef __SCAN_H__
-#define __SCAN_H__
+#ifndef __SCAN_HPP__
+#define __SCAN_HPP__
 
-#include <memory>
-//#include <vector>
 #include "unique_vector.hpp"
 #ifdef __clang__
 #include <numeric>
@@ -17,18 +15,7 @@
  */
 template <class T> void fullScanSizes(const sili::unique_vector<sili::unique_vector<T>> &vec_of_vec, sili::unique_vector<size_t>&fullScan, int&& scan_a=0) {
     
-    /*std::unique_ptr<sili::unique_vector<size_t>> fullScan;
-
-    #pragma omp single
-    {
-    fullScan.reset(new sili::unique_vector<size_t>(vec_of_vec.size() + 1));
-    (*fullScan)[0] = 0;
-    }
-    #pragma omp barrier*/
-
-    //int scan_a = 0;
 #ifdef __clang__ // OMP scan is broken in clang and may crash it: https://github.com/llvm/llvm-project/issues/87466
-    // code golf one-liner lol
     std::inclusive_scan(
         vec_of_vec.begin(),
         vec_of_vec.end(),
@@ -36,8 +23,7 @@ template <class T> void fullScanSizes(const sili::unique_vector<sili::unique_vec
         [](const size_t &cum_sum, const sili::unique_vector<T> &vec) { return cum_sum + vec.size(); },
         0);
 #else
-//#pragma omp parallel
-//    {
+
 #pragma omp for simd reduction(inscan, + : scan_a)
     for (int i = 0; i < vec_of_vec.size()+1; i++) {
         fullScan[i] = scan_a;
@@ -52,15 +38,7 @@ template <class T> void fullScanSizes(const sili::unique_vector<sili::unique_vec
         
     }
 # pragma omp barrier
-//    }
-
-    /*for(int i = 0; i < vec_of_vec.size()+1; i++){
-            (*fullScan)[i] = scan_a;
-            scan_a += vec_of_vec[i].size();
-    }*/
 #endif
-
-    //return fullScan;
 }
 
 /**
@@ -71,13 +49,10 @@ template <class T> void fullScanSizes(const sili::unique_vector<sili::unique_vec
  * @return A vector of size_t with cumulative sizes, one element larger than the input.
  */
 template <class T>
-std::unique_ptr<sili::unique_vector<sili::unique_vector<size_t>>> fullScanSizes2(const sili::unique_vector<sili::unique_vector<sili::unique_vector<T>>> &vec_of_vec_of_vec) {
-    std::unique_ptr<sili::unique_vector<sili::unique_vector<size_t>>> fullScans(new sili::unique_vector<sili::unique_vector<size_t>>(vec_of_vec_of_vec.size()));
-    
+void fullScanSizes2(const sili::unique_vector<sili::unique_vector<sili::unique_vector<T>>> &vec_of_vec_of_vec, sili::unique_vector<sili::unique_vector<size_t>>& fullScans) {
     for (int i = 0; i < vec_of_vec_of_vec.size(); i++) {
-        fullScans.get()[i] = fullScanSizes(vec_of_vec_of_vec[i]);
+        fullScanSizes(vec_of_vec_of_vec[i], fullScans[i]);
     }
-    return fullScans;
 }
 
 #endif

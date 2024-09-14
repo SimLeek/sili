@@ -567,7 +567,7 @@ TEST_CASE("Linear Backward SIDLSO Test Suite") {
         I_grad.rows = batch_size;
         I_grad.cols = input_size;
 
-        std::shared_ptr<WeightGradUpdater> updater(new WeightGradUpdater(input_size, output_size));  //inits to zero
+        std::shared_ptr<BasicLinearGradUpdater> updater(new BasicLinearGradUpdater(input_size, output_size));  //inits to zero
         auto W_grad_callback = get_dense_W_grad_callback(updater);
 
         linear_backward_sidlso(batch_size, input_size, output_size, input_csr, W, output_grad_csr, I_grad, W_grad_callback);
