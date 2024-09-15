@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifndef NDEBUG
 #include <iostream>
@@ -45,18 +46,25 @@ template <class Type> class unique_vector {
     size_t capacity_ = 0;
     Type *data_ = nullptr;
   public:
+    typedef Type value_type;
+
     explicit unique_vector(const unique_vector &) = delete;
 
-    explicit unique_vector(unique_vector &&src)
-        : length_(std::move(src.length_)), capacity_(std::move(src.capacity_)), data_(std::move(src.data_)) {}
+    unique_vector(unique_vector &&src)
+        : length_(std::move(src.length_)), capacity_(std::move(src.capacity_)), data_(std::move(src.data_)) {
+            //leave src in valid but empty state
+            src.length_ = 0;
+            src.capacity_ = 0;
+            src.data_ = nullptr;
+        }
     unique_vector(void)
         : length_(0), capacity_(0), data_(nullptr) { // ASSERT( std::is_standard_layout<size_t>() &&
                                                      // std::is_trivial<size_t>(), "not plain old data");
     }
     unique_vector(size_t n) : length_(0), capacity_(0), data_(nullptr) { extend(n); }
 
-    template <typename wrong_type, typename = std::enable_if<!is_specialization<wrong_type, unique_vector>::value>>
-    unique_vector(const std::initializer_list<wrong_type> &init_list) : length_(0), capacity_(0), data_(nullptr) {
+    template <typename SOME_TYPE, typename = std::enable_if<!is_specialization<SOME_TYPE, unique_vector>::value>>
+    unique_vector(const std::initializer_list<SOME_TYPE> &init_list) : length_(0), capacity_(0), data_(nullptr) {
         extend(init_list.size());
         if constexpr (!(std::is_standard_layout<Type>() && std::is_trivial<Type>())) {
             if constexpr (std::is_copy_constructible<Type>()) {
@@ -75,11 +83,11 @@ template <class Type> class unique_vector {
     }
 
     // handle nested initializer lists without copying
-    template <class wrong_type, typename = std::enable_if<!is_specialization<wrong_type, unique_vector>::value>>
-    unique_vector(const std::initializer_list<std::initializer_list<wrong_type>> &&init_list)
+    template <class SOME_TYPE, typename = std::enable_if<!is_specialization<SOME_TYPE, unique_vector>::value>>
+    unique_vector(const std::initializer_list<std::initializer_list<SOME_TYPE>> &&init_list)
         : length_(0), capacity_(0), data_(nullptr) {
         extend(init_list.size());
-        if constexpr (std::is_copy_constructible<wrong_type>()) {
+        if constexpr (std::is_copy_constructible<SOME_TYPE>()) {
             size_t i = 0;
             for (const auto &sublist : init_list) {
                 // Handle nested lists by constructing elements in place
@@ -118,7 +126,7 @@ template <class Type> class unique_vector {
                 size_t i;
                 for (i = old_length; i < length_; i++) {
                     // data_[i].~Type();
-                    new (&data_[i]) Type();
+                    new (&data_[i]) Type;
                 }
             }
             return old_length;
@@ -192,6 +200,44 @@ template <class Type> class unique_vector {
         }
     }
 
+    void reserve(size_t n) {
+        if (capacity_ < n) {
+            size_t old_capacity = capacity_;
+            Type *old_data = data_;
+
+            // get new memory and set capacity
+            size_t capacity_bytes = n * sizeof(Type);
+            if (capacity_bytes < cache_line_bytes) {
+                size_t aligned_cache_bytes = size_t((cache_line_bytes + sizeof(Type) - 1) / sizeof(Type)) * sizeof(Type);
+                capacity_bytes = aligned_cache_bytes;
+            }
+            void *v_ptr;
+            if constexpr (!(std::is_standard_layout<Type>() && std::is_trivial<Type>())) {
+                v_ptr = calloc(n,
+                              sizeof(Type)); // avoid uninitialized access for pod vectors of pod vectors for example
+            } else {
+                v_ptr = malloc(capacity_bytes);
+            }
+
+            capacity_ = capacity_bytes / sizeof(Type);
+            
+            data_ = reinterpret_cast<Type *>(v_ptr);
+            ASSERT(length_ <= capacity_, "length must be less than or equal to capacity");
+
+            size_t i;
+            if (old_capacity > 0) {
+                if constexpr (!(std::is_standard_layout<Type>() && std::is_trivial<Type>())) {
+                    for (i = 0; i < length_; i++) {
+                        new (&data_[i]) Type(std::move(old_data[i]));
+                        old_data[i].~Type();
+                    }
+                } else {
+                    std::move(old_data, old_data + length_, data_);
+                }
+            }
+        }
+    }
+
     Type &operator[](size_t i) {
         ASSERT(i < length_,
                "Attempted to access out of bounds element " + std::to_string(i) + ". Max: " + std::to_string(length_));
@@ -220,6 +266,11 @@ template <class Type> class unique_vector {
     }
 
     template <class OTHER_TYPE> bool operator==(const unique_vector<OTHER_TYPE> &b) const {
+        return std::distance(begin(), end()) == std::distance(b.begin(), b.end()) &&
+               std::equal(begin(), end(), b.begin());
+    }
+
+    template <class OTHER_TYPE> bool operator==(const std::vector<OTHER_TYPE> &b) const {
         return std::distance(begin(), end()) == std::distance(b.begin(), b.end()) &&
                std::equal(begin(), end(), b.begin());
     }
