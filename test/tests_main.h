@@ -105,9 +105,16 @@ void getNonzeroIndicesAndValues(const std::vector<T> &d,
                                 std::vector<T> &nonzero_values,
                                 double epsilon = std::numeric_limits<T>::epsilon()) {
     for (size_t i = 0; i < d.size(); ++i) {
-        if (std::abs(d[i]) > epsilon) {
-            nonzero_indices.push_back(i);
-            nonzero_values.push_back(d[i]);
+        if constexpr (std::is_signed<T>::value) {
+            if (std::abs(d[i]) > epsilon) {
+                nonzero_indices.push_back(i);
+                nonzero_values.push_back(d[i]);
+            }
+        }else{
+            if (d[i] > epsilon) {
+                nonzero_indices.push_back(i);
+                nonzero_values.push_back(d[i]);
+            }
         }
     }
 }
@@ -118,9 +125,16 @@ void getNonzeroIndicesAndValues(const sili::unique_vector<T> &d,
                                 sili::unique_vector<T> &nonzero_values,
                                 double epsilon = std::numeric_limits<T>::epsilon()) {
     for (size_t i = 0; i < d.size(); ++i) {
-        if (std::abs(d[i]) > epsilon) {
-            nonzero_indices.push_back(i);
-            nonzero_values.push_back(d[i]);
+        if constexpr (std::is_signed<T>::value) {
+            if (std::abs(d[i]) > epsilon) {
+                nonzero_indices.push_back(i);
+                nonzero_values.push_back(d[i]);
+            }
+        }else{
+            if (d[i] > epsilon) {
+                nonzero_indices.push_back(i);
+                nonzero_values.push_back(d[i]);
+            }
         }
     }
 }

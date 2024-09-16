@@ -144,7 +144,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
 
     // duplicated code start: move this out
     SIZE_TYPE *accum = new SIZE_TYPE[max_rows + 1];
-#pragma omp parallel for simd num_threads(num_cpus) reduction(inscan, + : ptrs[csrMatrix.rows + 1])
+#pragma omp parallel for simd num_threads(num_cpus) reduction(+ : accum[max_rows + 1])
     for (SIZE_TYPE i = 0; i < max_nnz; ++i) {
         // values[i] = 0;  // Initialize values as 0
         accum[rows[i] + 1]++;
@@ -175,21 +175,36 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
     // duplicated code end
 }
 
+template<class SIZE_TYPE>
+inline int get_col(int ptr, int row_start_ptr, SIZE_TYPE* indices, int cols, int end){
+        if(ptr<0){
+            return -1;
+        }else if(ptr>=(end-row_start_ptr)){
+            return cols;
+        }else{
+            return indices[row_start_ptr+ptr];
+        }
+}
+
 // generate random csr of points, taking in avoid_pts for cumulative random csr generation
 template <class SIZE_TYPE, class VALUE_TYPE>
 csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     SIZE_TYPE insertions,
     const csr_struct<SIZE_TYPE, VALUE_TYPE> &csr_avoid_pts,
     std::uniform_int_distribution<SIZE_TYPE> &index_dist, // should be from 0 to rows*cols
-    std::default_random_engine &generator,
-    const int num_cpus) {
+    std::mt19937 &generator,
+    int num_cpus,
+    unsigned local_seed=static_cast<unsigned long>(std::time(0))) {
     SIZE_TYPE total_elements = csr_avoid_pts.rows * csr_avoid_pts.cols;
     SIZE_TYPE total_nnz = csr_avoid_pts.nnz();
     SIZE_TYPE inverse_sparse_size = total_elements - total_nnz;
 
     // avoid infinite while loops later
-    if (inverse_sparse_size > insertions) {
+    if (insertions > inverse_sparse_size) {
         insertions = inverse_sparse_size;
+    }
+    if(num_cpus>insertions){
+        num_cpus=insertions; // without this, insertions are restricted to small chunks
     }
 
     // Arrays for row and column positions
@@ -197,7 +212,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     SIZE_TYPE *cols = new SIZE_TYPE[insertions];
 
 // Parallel section for random position generation
-#pragma omp parallel num_threads(num_cpus)
+#pragma omp parallel num_threads(num_cpus) shared(rows, cols)
     {
         SIZE_TYPE tid = omp_get_thread_num(); // Thread ID
 
@@ -211,49 +226,77 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
             std::min(inv_sp_start + inv_sp_chunk_size, inverse_sparse_size); // Calculate the end index for this thread
 
         // Thread-local random generator
-        std::default_random_engine thread_local_gen = generator;
-        thread_local_gen.seed(omp_get_thread_num());
-
-        SIZE_TYPE random_inverse_pos = start;
+        unsigned long seed = tid+local_seed;
+        std::mt19937 thread_local_gen(seed); //nearby values cannot be the same
+        SIZE_TYPE random_inverse_pos = 0;
+        SIZE_TYPE remaining_space = inv_sp_end - inv_sp_start;
 
         for (SIZE_TYPE current_insertion = start; current_insertion < end; ++current_insertion) {
-            random_inverse_pos += index_dist(thread_local_gen) %
-                                  ((inv_sp_chunk_size - random_inverse_pos) / (chunk_size - current_insertion));
+            SIZE_TYPE remaining_insertions = end - current_insertion;
+            SIZE_TYPE max_step = std::max((SIZE_TYPE)1, remaining_space / remaining_insertions);
+            SIZE_TYPE step = (index_dist(thread_local_gen) % max_step);
+            random_inverse_pos += step+1;
+            remaining_space -= step+1;
 
             // Binary search to find the corresponding row for the random_inverse_pos
-            SIZE_TYPE low = 0, high = csr_avoid_pts.rows;
-            SIZE_TYPE remaining = random_inverse_pos + inv_sp_start;
+            int low = 0, high = csr_avoid_pts.rows;
+            SIZE_TYPE remaining = random_inverse_pos-1 + inv_sp_start;
 
-            while (low < high) {
-                SIZE_TYPE mid = (low + high) / 2;
-                SIZE_TYPE rows_elements = csr_avoid_pts.cols * mid - (csr_avoid_pts.ptrs[mid + 1] -
-                                                                      csr_avoid_pts.ptrs[low]); // Inverse of nnz so far
+            //allow zero on this step, but ensure we move forward in that case
+            //random_inverse_pos += 1;
+            //remaining_space -= 1;
 
-                if (remaining < rows_elements) {
-                    high = mid;
-                } else {
-                    remaining -= rows_elements;
-                    low = mid + 1;
+            int mid;
+            while (low <= high) {
+                mid = (low + high) / 2;
+                SIZE_TYPE elements_before = csr_avoid_pts.cols * (mid-low) - (csr_avoid_pts.ptrs[mid] -
+                                                                      csr_avoid_pts.ptrs[low]);
+                SIZE_TYPE elements_at = csr_avoid_pts.cols - (csr_avoid_pts.ptrs[mid+1] -
+                                                                      csr_avoid_pts.ptrs[mid]);
+
+                if (elements_before+elements_at<= remaining) { // x is greater, ignore left half
+                    low = mid+1;
+                    remaining-=(elements_before+elements_at);
+                } else if(elements_before> remaining){ // x is lesser, ignore right half
+                    high = mid - 1;
+                }else{ // x is in this row
+                    remaining-=elements_before;
+                    break;
                 }
             }
-            rows[current_insertion] = low;
+            rows[current_insertion] = mid;
+
+            //remaining+=1;
 
             // Now search within the found row to determine the column
-            SIZE_TYPE low_ptr = csr_avoid_pts.ptrs[rows[current_insertion]],
-                      high_ptr = csr_avoid_pts.ptrs[rows[current_insertion] + 1];
+            //FIX: you were searching between low to high indices. Should be searching 0 to max, and the ptrs are in between
+            SIZE_TYPE row_start_ptr = csr_avoid_pts.ptrs[rows[current_insertion]];
+            SIZE_TYPE end_ptr = csr_avoid_pts.ptrs[rows[current_insertion]+1];
+            int low_ptr = -1,
+                high_ptr = end_ptr-row_start_ptr;
+            SIZE_TYPE mid_ptr;
             while (low_ptr < high_ptr) {
-                SIZE_TYPE mid_ptr = (low_ptr + high_ptr) / 2;
-                SIZE_TYPE cols_elements = csr_avoid_pts.indices[mid_ptr] - (mid_ptr - low_ptr); // Inverse of nnz so far
-
+                mid_ptr = (low_ptr + high_ptr+1) / 2;
+                int col1 = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
+                int col2 = get_col(low_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
+                SIZE_TYPE cols_elements = (col1 - col2) - (mid_ptr - low_ptr); // Inverse of nnz so far
+                
                 if (remaining < cols_elements) {
-                    high_ptr = mid_ptr;
-                } else {
+                    high_ptr = mid_ptr-1;
+                    if(low_ptr>=high_ptr){ 
+                        mid_ptr--;//fix bad exit
+                        //remaining+=1;
+                    }
+                } else if(remaining>=cols_elements) {
                     remaining -= cols_elements;
-                    low_ptr = mid_ptr + 1;
-                }
+                    low_ptr = mid_ptr;
+                }/*else{
+                    remaining -= cols_elements;
+                    break;
+                }*/
             }
-            SIZE_TYPE before_col = csr_avoid_pts.indices[low_ptr];
-            cols[current_insertion] = before_col + remaining;
+            SIZE_TYPE before_col = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
+            cols[current_insertion] = before_col + remaining+1;
         }
     }
 
@@ -269,23 +312,41 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     }*/
 
     // Build the ptrs array based on the sorted rows and cols
-    SIZE_TYPE *accum = new SIZE_TYPE[csr_avoid_pts.rows + 1];
+    SIZE_TYPE *accum = new SIZE_TYPE[csr_avoid_pts.rows];
     VALUE_TYPE *values = new VALUE_TYPE[insertions];
 
-    std::fill(accum, accum + csr_avoid_pts.rows + 1, 0);
+    std::fill(accum, accum + csr_avoid_pts.rows, 0);
 
-#pragma omp parallel for simd num_threads(num_cpus) reduction(inscan, + : ptrs[csrMatrix.rows + 1])
-    for (SIZE_TYPE i = 0; i < insertions; ++i) {
-        // values[i] = 0;  // Initialize values as 0
-        accum[rows[i] + 1]++;
+    //accumulate parallel
+    //thx: https://stackoverflow.com/a/70625541
+    if(num_cpus>1){
+    SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus*(csr_avoid_pts.rows)];
+    std::fill(thr_accum, thr_accum + csr_avoid_pts.rows*num_cpus, 0);
+    #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
+  {
+    int thread = omp_get_thread_num(),
+      myfirst = thread*(csr_avoid_pts.rows);
+    #pragma omp for
+    for ( int i=0; i<insertions; i++ )
+      thr_accum[ myfirst+rows[i] ]++;
+    #pragma omp for
+    for ( int igrp=0; igrp<(csr_avoid_pts.rows); igrp++ )
+      for ( int t=0; t<num_cpus; t++ )
+        accum[igrp] += thr_accum[ t*(csr_avoid_pts.rows)+igrp ];
+  }
+    }else{
+        for ( int i=0; i<insertions; i++ )
+            accum[ rows[i] ]++;
     }
 
     SIZE_TYPE *ptrs = new SIZE_TYPE[csr_avoid_pts.rows + 1];
+    std::fill(ptrs, ptrs + csr_avoid_pts.rows + 1, 0);
     SIZE_TYPE scan_a = 0;
-#pragma omp parallel for simd reduction(inscan, + : scan_a)
+#pragma omp parallel for simd reduction(inscan, + : scan_a) shared(ptrs)
     for (SIZE_TYPE i = 0; i < csr_avoid_pts.rows + 1; i++) {
-        ptrs[i] = scan_a;
-#pragma omp scan exclusive(scan_a)
+        //#pragma omp atomic
+        ptrs[i] += scan_a;
+        #pragma omp scan exclusive(scan_a)
         { scan_a += accum[i]; }
     }
 
@@ -440,7 +501,7 @@ void add_few_random_to_csr(SIZE_TYPE insertions,
 // at all
 template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
   private:
-    std::default_random_engine generator;                  // Random number generator
+    std::mt19937 generator;                  // Random number generator
     std::uniform_real_distribution<VALUE_TYPE> value_dist; // Distribution for random values
     std::uniform_int_distribution<SIZE_TYPE> index_dist;   // Distribution for random indices
 

@@ -23,9 +23,11 @@ set(SOURCE_FILES
 
 set(HEADER_FILES
     tests_main.h
-    ../sili/lib/headers/unique_vector.hpp
+    ../sili/lib/headers/csr.hpp
+    
     #PASSED TESTS
-    #../sili/lib/headers/coo.hpp
+    ../sili/lib/headers/unique_vector.hpp
+    ../sili/lib/headers/coo.hpp
 
     #OLD TESTS
     #../sili/lib/headers/cache_info.h
@@ -40,9 +42,10 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
 
-    test_unique_vector.cpp
+    test_csr.cpp
 
     #COMPLETED TESTS
+    #test_unique_vector.cpp
     #test_coo.cpp
 
     #OLD TESTS
