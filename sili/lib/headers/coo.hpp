@@ -106,9 +106,9 @@ SIZE_TYPE recursive_merge_sort_coo(SIZE_TYPE *cols,
 #pragma omp taskgroup
             {
 #pragma omp task shared(cols, rows, vals, left_duplicates) untied if (right - left >= (1 << 14))
-                left_duplicates= recursive_merge_sort_coo(cols, rows, vals, left, mid, 0);
+                left_duplicates= recursive_merge_sort_coo(cols, rows, vals, left, mid, (SIZE_TYPE)0);
 #pragma omp task shared(cols, rows, vals, right_duplicates) untied if (right - left >= (1 << 14))
-                right_duplicates= recursive_merge_sort_coo(cols, rows, vals, mid + 1, right, 0);
+                right_duplicates= recursive_merge_sort_coo(cols, rows, vals, mid + 1, right, (SIZE_TYPE)0);
 #pragma omp taskyield
             }
 

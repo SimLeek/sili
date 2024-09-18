@@ -216,7 +216,7 @@ TEST_CASE("Merge Sort COO - Large Random Input", "[merge_sort_coo][stress]") {
     std::vector<float> vals(size);
 
     // Initialize with random values
-    std::mt19937 rng(123);  // Seed for reproducibility
+    std::mt19937_64 rng(123);  // Seed for reproducibility
     for (int i = 0; i < size; ++i) {
         rows[i] = rng() % 100;  // Random row indices
         cols[i] = rng() % 100;  // Random column indices

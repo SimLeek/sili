@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <ctime>
+#include <iterator>
 #include <memory>
 #include <omp.h>
 #include <random>
@@ -92,62 +93,87 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
                                              const int num_cpus) {
     SIZE_TYPE total_nnz = a_csr.nnz() + b_csr.nnz();
 
-    SIZE_TYPE max_nnz = std::max(a_csr.nnz(), b_csr.nnz());
+    auto& max_csr = std::max(a_csr.nnz(), b_csr.nnz())==a_csr.nnz()?a_csr:b_csr;
+    auto& min_csr = std::max(a_csr.nnz(), b_csr.nnz())==a_csr.nnz()?b_csr:a_csr;  //guarantee opposite even if equal
+
     SIZE_TYPE max_rows = std::max(a_csr.rows, b_csr.rows);
     SIZE_TYPE max_cols = std::max(a_csr.cols, b_csr.cols);
 
     // Arrays for row and column positions
     SIZE_TYPE *rows = new SIZE_TYPE[total_nnz];
     SIZE_TYPE *cols = new SIZE_TYPE[total_nnz];
-    SIZE_TYPE *vals = new SIZE_TYPE[total_nnz];
+    VALUE_TYPE *vals = new VALUE_TYPE[total_nnz];
+
+    SIZE_TYPE duplicates;
 
 #pragma omp parallel num_threads(num_cpus)
     {
         SIZE_TYPE tid = omp_get_thread_num(); // Thread ID
 
-        SIZE_TYPE chunk_size = (a_csr.nnz() + num_cpus - 1) / num_cpus; // Split insertions among threads
+        SIZE_TYPE chunk_size = (max_csr.nnz() + num_cpus - 1) / num_cpus; // Split insertions among threads
         SIZE_TYPE start = tid * chunk_size;
-        SIZE_TYPE end = std::min(start + chunk_size, a_csr.nnz()); // Calculate the end index for this thread
-        SIZE_TYPE row = std::max(0, std::upper_bound(a_csr.ptrs.get(), a_csr.ptrs.get() + a_csr.rows, start) - 1);
+        SIZE_TYPE end_max = std::min(start + chunk_size, max_csr.nnz()); // Calculate the end index for this thread
+        SIZE_TYPE end_min = std::min(start + chunk_size, min_csr.nnz()); // Calculate the end index for this thread
+
+        //SIZE_TYPE row = std::max(0, std::upper_bound(a_csr.ptrs.get(), a_csr.ptrs.get() + a_csr.rows, start)-a_csr.ptrs.get()));
+
+        SIZE_TYPE row = static_cast<SIZE_TYPE>(std::max(static_cast<std::ptrdiff_t>(0), 
+    std::upper_bound(min_csr.ptrs.get(), min_csr.ptrs.get() + min_csr.rows, start) - min_csr.ptrs.get()-1));
 
         SIZE_TYPE iter = start;
-        while (iter < end) {
-            if (iter >= a_csr.ptrs[row + 1]) {
+        while (iter < end_min) {
+            if (iter >= min_csr.ptrs[row + 1]) {
                 row++;
             }
             rows[iter] = row;
-            cols[iter] = a_csr.indices[iter];
-            vals[iter] = a_csr.values[iter];
+            cols[iter] = min_csr.indices[iter];
+            vals[iter] = min_csr.values[iter];
             iter++;
         }
 
-        chunk_size = (b_csr.nnz() + num_cpus - 1) / num_cpus; // Split insertions among threads
-        start = tid * chunk_size;
-        end = std::min(start + chunk_size, b_csr.nnz()); // Calculate the end index for this thread
-        row = std::max(0, std::upper_bound(b_csr.ptrs.get(), b_csr.ptrs.get() + b_csr.rows, start) - 1);
+        row = static_cast<SIZE_TYPE>(std::max(static_cast<std::ptrdiff_t>(0), 
+    std::upper_bound(max_csr.ptrs.get(), max_csr.ptrs.get() + max_csr.rows, start) - max_csr.ptrs.get()-1));
 
         iter = start;
-        while (iter < end) {
-            if (iter >= a_csr.ptrs[row + 1]) {
+        while (iter < end_max) {
+            if (iter >= max_csr.ptrs[row + 1]) {
                 row++;
             }
-            rows[iter + a_csr.nnz()] = row;
-            cols[iter + a_csr.nnz()] = b_csr.indices[iter];
-            vals[iter + a_csr.nnz()] = b_csr.values[iter];
+            rows[iter + min_csr.nnz()] = row;
+            cols[iter + min_csr.nnz()] = max_csr.indices[iter];
+            vals[iter + min_csr.nnz()] = max_csr.values[iter];
             iter++;
         }
 
 #pragma omp barrier
 
-        recursive_merge_sort_coo(rows, cols, vals, 0, max_nnz - 1);
+        #pragma omp single
+        duplicates = recursive_merge_sort_coo(cols, rows, vals, (SIZE_TYPE)0, SIZE_TYPE(total_nnz - 1), (SIZE_TYPE)0);
     }
 
     // duplicated code start: move this out
-    SIZE_TYPE *accum = new SIZE_TYPE[max_rows + 1];
-#pragma omp parallel for simd num_threads(num_cpus) reduction(+ : accum[max_rows + 1])
-    for (SIZE_TYPE i = 0; i < max_nnz; ++i) {
-        // values[i] = 0;  // Initialize values as 0
-        accum[rows[i] + 1]++;
+    SIZE_TYPE *accum = new SIZE_TYPE[max_rows];
+    std::fill(accum,accum+max_rows,0);
+//accumulate parallel
+    //thx: https://stackoverflow.com/a/70625541
+    if(num_cpus>1){
+    SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus*(max_rows)];
+    std::fill(thr_accum, thr_accum + max_rows*num_cpus, 0);
+    #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
+  {
+    int thread = omp_get_thread_num(),
+      myfirst = thread*(max_rows);
+    #pragma omp for
+    for ( int i=0; i<total_nnz-duplicates; i++ )
+      thr_accum[ myfirst+rows[i] ]++;
+    #pragma omp for
+    for ( int igrp=0; igrp<(max_rows); igrp++ )
+      for ( int t=0; t<num_cpus; t++ )
+        accum[igrp] += thr_accum[ t*(max_rows)+igrp ];
+  }
+    }else{
+        for ( int i=0; i<total_nnz-duplicates; i++ )
+            accum[ rows[i] ]++;
     }
 
     SIZE_TYPE *ptrs = new SIZE_TYPE[max_rows + 1];
@@ -168,7 +194,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
     return_csr.cols = max_cols;
     return_csr.ptrs.reset(ptrs);
     return_csr.indices.reset(cols);
-    // random_csr.values.reset(values);
+    return_csr.values.reset(vals);
 
     return return_csr;
 
@@ -192,7 +218,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     SIZE_TYPE insertions,
     const csr_struct<SIZE_TYPE, VALUE_TYPE> &csr_avoid_pts,
     std::uniform_int_distribution<SIZE_TYPE> &index_dist, // should be from 0 to rows*cols
-    std::mt19937 &generator,
+    std::mt19937_64 &generator,
     int num_cpus,
     unsigned local_seed=static_cast<unsigned long>(std::time(0))) {
     SIZE_TYPE total_elements = csr_avoid_pts.rows * csr_avoid_pts.cols;
@@ -227,7 +253,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
 
         // Thread-local random generator
         unsigned long seed = tid+local_seed;
-        std::mt19937 thread_local_gen(seed); //nearby values cannot be the same
+        std::mt19937_64 thread_local_gen(seed); //nearby values cannot be the same
         SIZE_TYPE random_inverse_pos = 0;
         SIZE_TYPE remaining_space = inv_sp_end - inv_sp_start;
 
@@ -501,7 +527,7 @@ void add_few_random_to_csr(SIZE_TYPE insertions,
 // at all
 template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
   private:
-    std::mt19937 generator;                  // Random number generator
+    std::mt19937_64 generator;                  // Random number generator
     std::uniform_real_distribution<VALUE_TYPE> value_dist; // Distribution for random values
     std::uniform_int_distribution<SIZE_TYPE> index_dist;   // Distribution for random indices
 
