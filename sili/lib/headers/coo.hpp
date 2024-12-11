@@ -19,6 +19,8 @@ SIZE_TYPE inplace_merge_coo(SIZE_TYPE *cols,
         if (rows[i] < rows[j] || (rows[i] == rows[j] && cols[i] < cols[j])) {
             i++;
         } else if (rows[i] == rows[j] && cols[i] == cols[j]) {
+            // sum duplicates
+            vals[i]+=vals[j];
             // Duplicate found, remove the element from the right subarray
             for (SIZE_TYPE k = j; k <= right; k++) {
                 rows[k] = rows[k + 1];
@@ -76,6 +78,8 @@ SIZE_TYPE insertion_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals,
 
         // Check for duplicates after insertion
         if (j > left && rows[j] == rows[j - 1] && cols[j] == cols[j - 1]) {
+            // sum duplicates
+            vals[j-1]+= vals[j]
             // Duplicate found, remove the current element
             for (SIZE_TYPE k = j; k < right; k++) {
                 rows[k] = rows[k + 1];

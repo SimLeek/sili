@@ -55,4 +55,39 @@ void fullScanSizes2(const sili::unique_vector<sili::unique_vector<sili::unique_v
     }
 }
 
+/**
+ * Computes a cumulative sum of the sizes of inner vectors using OpenMP.
+ *
+ * @tparam T The type of elements in the inner vectors.
+ * @param vec_of_vec A vector of vectors of type T.
+ * @return A vector of size_t with cumulative sizes, one element larger than the input.
+ */
+template <class T> void fullScanValues(const sili::unique_vector<T> &vec, sili::unique_vector<T>&fullScan, T&& scan_a=0) {
+
+#ifdef __clang__ // OMP scan is broken in clang and may crash it: https://github.com/llvm/llvm-project/issues/87466
+    std::inclusive_scan(
+        vec.begin(),
+        vec.end(),
+        fullScan.begin() + 1,
+        std::plus<T>()
+    );
+#else
+
+#pragma omp for simd reduction(inscan, + : scan_a)
+    for (int i = 0; i < vec.size()+1; i++) {
+        fullScan[i] = scan_a;
+        #pragma omp scan exclusive(scan_a)
+        {
+            if(i<vec.size()){
+                scan_a += vec[i];
+            }else{
+                scan_a += vec[i-1];
+            }
+        }
+
+    }
+# pragma omp barrier
+#endif
+}
+
 #endif

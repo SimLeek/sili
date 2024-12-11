@@ -12,6 +12,7 @@
 #include "unique_vector.hpp"
 
 
+//TODO: Should probably do the same exact optimization for outer product
 template <class W_CONTAINER, class SIZE_TYPE, class VALUE_TYPE>
 inline void _do_rolling_linear_sidlso_fwd(int num_cpus,
                                           SIZE_TYPE input_size,
