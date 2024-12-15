@@ -16,6 +16,10 @@ void sparse_linear_csr_csc_forward(
     const csr_struct<Index, Value>& input_tensor,
     const csr_struct<Index, Value>& weight_tensor,
     Value* output,
+    bool train,
+    //Value beta=0.9, // beta may be larger than optim beta to induce sparsity
+    Value solidify=0.01 // multiplies importances by 1.0+solidify so eventually they become very hard to remove
+
 ){
     #pragma omp parallel
     {
@@ -32,8 +36,13 @@ void sparse_linear_csr_csc_forward(
                     // Note: For CSC, we're using 'input_index' as the row index due to the transpose nature of CSC
                     Value weight_value = weight_tensor.values[weight_ptr];
                     Index output_index = weight_tensor.indices[weight_ptr];
+                    auto weight_contribution = weight_value*input_value;
+                    if(train){
+                        weight_tensor.importances[weight_ptr] = weight_tensor.importances[weight_ptr] + weight_contribution*solidify;
+                    }
+
                     #pragma omp atomic
-                    output[output_index] += weight_value*input_value;
+                    output[output_index] += weight_contribution;
                 }
             }
         }
@@ -174,7 +183,7 @@ csr_struct<Index, Value> generate_new_weights_csc(
     Index total_elements = input_tensor.nnz()*output_gradient_tensor.nnz();
     Index weight_cols = output_gradient_tensor.cols;
     Index weight_rows = input_tensor.cols;
-    return coo_to_csc(
+    auto csc_out = coo_to_csc(
         cols,
         rows,
         vals,
@@ -182,6 +191,7 @@ csr_struct<Index, Value> generate_new_weights_csc(
         weight_cols,
         total_elements-duplicates,
         num_cpus);
+    return csc_out;
 }
 
 /**
@@ -201,7 +211,9 @@ void sparse_linear_vectorized_backward_is(
     csr_struct<Index, Value>& weight_gradients,
     const int num_cpus)
 {
-    weight_gradients = generate_new_weights_csc(input_tensor, output_gradients_reduced, num_cpus);
+    if (input_tensor.nnz()>0 && output_gradients_reduced.nnz()>0){
+        weight_gradients = generate_new_weights_csc(input_tensor, output_gradients_reduced, num_cpus);
+    }
 
 #pragma omp parallel
     {
@@ -222,4 +234,62 @@ void sparse_linear_vectorized_backward_is(
             }
         }
     }
+}
+
+template <typename Index, typename Value>
+void optimize_weights_with_importance(
+    csr_struct<Index, Value>& weight_tensor,
+    csr_struct<Index, Value>& weight_gradients,
+    const Value learning_rate,
+    const Value beta = 0.9; // Decay rate for importance updates
+    const Index max_weights,
+    const int num_cpus
+) {
+
+    Value* importance_tensor = new Value[weight_gradients.nnz()];
+    #pragma omp parallel num_threads(num_cpus)
+    for (int weight_ptr = 0; weight_ptr < weight_gradients.nnz(); weight_ptr++) {
+        // weight_activation will always be zero since there was no weight yet, so just use 0-weight_error instead
+        Value weight_error = weight_gradients.values[weight_ptr] / learning_rate;
+        Value weight_instant_importance = - weight_error;
+
+        // Update importance tensor
+        importance_tensor[weight_ptr] = weight_instant_importance;
+    }
+
+    // Convert CSR to COO format if required
+    auto coo_weights = weight_tensor.to_coo();
+    auto coo_updates = weight_gradients.to_coo();
+
+    // Allocate arrays for merged weights
+    size_t merged_size = coo_weights.nnz() + coo_updates.nnz();
+    Index* merged_rows = new Index[merged_size];
+    Index* merged_cols = new Index[merged_size];
+    Value* merged_values = new Value[merged_size];
+
+    // Merge weights and updates
+    /* todo: importance values need to be merged and affect merging:
+     *   weight_importance = weight_importance * beta + gradient_importance * (1-beta)
+     *   weights = weights - learning_rate * gradients / (weight_importance + epsilon)
+     */
+    //   so, if two same index weights show up, divide them by their importance
+    size_t new_nnz = parallel_merge_sorted_coos(
+        coo_weights.rows, coo_weights.cols, coo_weights.values*-learning_rate , coo_weights.importances * (beta),
+        coo_updates.rows, coo_updates.cols, coo_updates.values, coo_gradients.importances * (1 - beta),
+        merged_rows, merged_cols, merged_values,
+        coo_weights.nnz(), coo_updates.nnz(), num_cpus);
+
+    // Check if pruning is required
+    if (new_nnz > max_weights) {
+        coo_subtract_bottom_k(
+            merged_cols, merged_rows, merged_values.data(),
+            importance_tensor.values,
+            weight_tensor.cols, weight_tensor.rows, weight_tensor.values,
+            importance_tensor.values,
+            new_nnz, new_nnz - max_weights, num_cpus
+        );
+    }
+
+    // Convert merged weights back to CSR format
+    weight_tensor.from_coo(merged_rows, merged_cols, merged_values, new_nnz);
 }

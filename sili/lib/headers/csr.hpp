@@ -86,7 +86,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<s
     return csr;
 }
 
-// merges two CSRs, assuming no overlapping positions
+// merges two CSRs
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_TYPE> &a_csr,
                                              const csr_struct<SIZE_TYPE, VALUE_TYPE> &b_csr,
