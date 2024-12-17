@@ -11,31 +11,151 @@
 #include <omp.h>
 #include <random>
 
-const size_t min_work_per_thread = 500;
+#include <memory>
+#include <array>
+#include <type_traits>
 
-// some of the basic tests I wrote at this point failed to delete the raw pointers, so while there is some overhead for
-// unique_ptr, I'm keeping it to stay sane.
-//  Also there's basically no overhead anyway if you compile with -O3 or -O4, which is the intended option
-template <class SIZE_TYPE, class VALUE_TYPE> struct csr_struct {
-    std::unique_ptr<SIZE_TYPE[]> ptrs;
-    std::unique_ptr<SIZE_TYPE[]> indices;
-    std::unique_ptr<VALUE_TYPE[]> values;
+// Sub-template for pointers
+template <class SIZE_TYPE>
+using CSRPointers = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
+
+template <class SIZE_TYPE>
+using CSRIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
+
+template <class SIZE_TYPE>
+using COOPointers = SIZE_TYPE;  // just store nnz
+
+template <class SIZE_TYPE>
+using COOIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 2>;
+
+template <class VALUE_TYPE>
+using UnaryValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 1>;
+
+template <class VALUE_TYPE>
+using BiValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 2>;
+
+template <class VALUE_TYPE>
+using TriValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 3>;
+
+template <class VALUE_TYPE>
+using QuadValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 4>;
+
+template <class VALUE_TYPE>
+using PentaValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 5>;
+
+// CSR Struct with sub-templates
+template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
+struct csr_struct {
+    PTRS ptrs;               // Pointers sub-template
+    INDICES indices;         // Indices sub-template
+    VALUES values;           // Values sub-template
     SIZE_TYPE rows;
     SIZE_TYPE cols;
     SIZE_TYPE _reserved_indices_and_values = 0;
 
+    // Default constructor
     csr_struct()
-        : ptrs(nullptr), indices(nullptr), values(nullptr), rows(0), cols(0), _reserved_indices_and_values(0) {}
+        : rows(0), cols(0), _reserved_indices_and_values(0) {}
 
-    csr_struct(SIZE_TYPE *p, SIZE_TYPE *ind, VALUE_TYPE *val, SIZE_TYPE non_zero, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
-        : ptrs(p), indices(ind), values(val), rows(num_p), cols(max_idx), _reserved_indices_and_values(reserved) {}
+    // Constructor for pre-allocated arrays
+    csr_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
+        : ptrs(std::move(p)), indices(std::move(ind)), values(std::move(val)),
+          rows(num_p), cols(max_idx), _reserved_indices_and_values(reserved) {}
 
-    csr_struct(SIZE_TYPE *p, SIZE_TYPE *ind, VALUE_TYPE *val, SIZE_TYPE non_zero, SIZE_TYPE num_p, SIZE_TYPE max_idx)
-        : ptrs(p), indices(ind), values(val), rows(num_p), cols(max_idx) {}
+    // Constructor without reserved size
+    csr_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx)
+        : csr_struct(std::move(p), std::move(ind), std::move(val), num_p, max_idx, 0) {}
 
-    SIZE_TYPE nnz() const { return (ptrs != nullptr) ? ptrs[rows] : 0; }
+    // Get the number of non-zeros
+    SIZE_TYPE nnz() const {
+        if constexpr (std::is_array_v<decltype(ptrs)>) { // Check if ptrs is an array type
+            return (ptrs[ptrs.size()-1] != nullptr) ? ptrs[ptrs.size()-1][rows] : 0;
+        } else { // ptrs is a single nnz value
+            return ptrs;
+        }
+    }
+
+    // Access specific pointer, index, or value arrays
+    SIZE_TYPE* get_ptr(std::size_t index) {
+        return ptrs.ptrs[index].get();
+    }
+    const SIZE_TYPE* get_ptr(std::size_t index) const {
+        return ptrs.ptrs[index].get();
+    }
+
+    SIZE_TYPE* get_index(std::size_t index) {
+        return indices.indices[index].get();
+    }
+    const SIZE_TYPE* get_index(std::size_t index) const {
+        return indices.indices[index].get();
+    }
+
+    template <std::size_t INDEX>
+    auto get_value() -> decltype(values.values[INDEX].get()) {
+        return values.values[INDEX].get();
+    }
+
+    template <std::size_t INDEX>
+    auto get_value() const -> decltype(values.values[INDEX].get()) {
+        return values.values[INDEX].get();
+    }
+
+    // Reserve space for indices and values
+    void reserve(SIZE_TYPE new_reserved) {
+        if (new_reserved > _reserved_indices_and_values) {
+            _reserved_indices_and_values = new_reserved;
+
+            // Resize index arrays
+            for (std::size_t i = 0; i < indices.indices.size(); ++i) {
+                auto new_indices = std::make_unique<SIZE_TYPE[]>(new_reserved);
+                if (indices.indices[i]) {
+                    std::copy(indices.indices[i].get(), indices.indices[i].get() + nnz(), new_indices.get());
+                }
+                indices.indices[i] = std::move(new_indices);
+            }
+
+            // Resize value arrays
+            for (std::size_t i = 0; i < values.values.size(); ++i) {
+                auto new_values = std::make_unique<typename std::remove_reference<decltype(*values.values[i])>::type[]>(new_reserved);
+                if (values.values[i]) {
+                    std::copy(values.values[i].get(), values.values[i].get() + nnz(), new_values.get());
+                }
+                values.values[i] = std::move(new_values);
+            }
+        }
+    }
 };
 
+// tri = weight multiplier, backprop, importance (for optim). Adagrad would use 2 for optim, using quad.
+// Since all these have the same indices, it's much cheaper to store them in the same csr.
+template <class SIZE_TYPE, class VALUE_TYPE>
+using CSRSynapses = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, TriValues<VALUE_TYPE> >;
+// easier to use in some algorithms
+template <class SIZE_TYPE, class VALUE_TYPE>
+using COOSynapses = csr_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, TriValues<VALUE_TYPE> >;
+
+// new weights are pre-optim and didn't contribute to forward, so no values and no importance yet, only grad.
+template <class SIZE_TYPE, class VALUE_TYPE>
+using CSRSynaptogenesis = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+using CSRInput = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
+
+//easier to use in some algorithms
+template <class SIZE_TYPE, class VALUE_TYPE>
+using COOSynaptogenesis = csr_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
+
+template <class SYNAPSES, class SYNAPTOGENESIS>
+struct sparse_weights{
+    SYNAPSES connections;
+    SYNAPTOGENESIS probes;
+};
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+using SparseLinearWeights = sparse_weights<CSRSynapses<SIZE_TYPE, VALUE_TYPE>, COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>>;
+
+const size_t min_work_per_thread = 500;
+/*
 template <class SIZE_TYPE, class VALUE_TYPE>
 csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
                                                      const sili::unique_vector<sili::unique_vector<VALUE_TYPE>> *values,
@@ -320,7 +440,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
                     remaining -= cols_elements;
                     break;
                 }*/
-            }
+            /*}
             SIZE_TYPE before_col = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
             cols[current_insertion] = before_col + remaining+1;
         }
@@ -337,7 +457,8 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
         }
     }*/
 
-    // Build the ptrs array based on the sorted rows and cols
+    // Build the ptrs array based on the sorted rows and cols/*
+    /*
     SIZE_TYPE *accum = new SIZE_TYPE[csr_avoid_pts.rows];
     VALUE_TYPE *values = new VALUE_TYPE[insertions];
 
@@ -572,6 +693,6 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
         }
     }
 };
-
+*/
 /* #endregion */
 #endif

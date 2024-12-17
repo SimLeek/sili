@@ -69,6 +69,9 @@ Stars, because they're sparse like COOs:
 *
 * @return Number of duplicates removed during merging.
 */
+#include <algorithm>
+#include <omp.h>
+#include <vector>
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 SIZE_TYPE inplace_merge_coo(SIZE_TYPE *cols,
                             SIZE_TYPE *rows,
@@ -160,7 +163,7 @@ SIZE_TYPE insertion_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals,
         // Check for duplicates after insertion
         if (j > left && rows[j] == rows[j - 1] && cols[j] == cols[j - 1]) {
             // sum duplicates
-            vals[j-1]+= vals[j]
+            vals[j-1]+= vals[j];
             // Duplicate found, remove the current element
             for (SIZE_TYPE k = j; k < right; k++) {
                 rows[k] = rows[k + 1];
@@ -260,7 +263,7 @@ SIZE_TYPE merge_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals, SIZ
     return duplicates;
 }
 
-#-------EXTERNAL SORT---------
+//-------EXTERNAL SORT---------
 
 //use these functions to sort the synapse COO by importance and then delete the least important for synaptic pruning
 // then use the above sort to coalesce for conversion to CSR
@@ -428,10 +431,10 @@ void recursive_merge_sort_coo_external(SIZE_TYPE *cols,
 *This function sorts the entire COO matrix based on the corresponding values in the external sorting array using merge sort.
 */
 template <typename SIZE_TYPE, typename VALUE_TYPE, typename EXTERNAL_TYPE>
-void merge_sort_coo_external(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals, EXTERNAL_TYPE *ext_vals) {
+void merge_sort_coo_external(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals, EXTERNAL_TYPE *ext_vals, SIZE_TYPE size) {
 #pragma omp parallel
 #pragma omp single
-    duplicates+=recursive_merge_sort_coo(cols, rows, vals, 0, (SIZE_TYPE)size - 1, 0);
+    recursive_merge_sort_coo(cols, rows, vals, 0, (SIZE_TYPE)size - 1, 0);
 
     return;
 }
@@ -453,9 +456,9 @@ void merge_sort_coo_external(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals,
 *This function performs a binary search on the COO matrix to find the appropriate position for a given row and column pair.
 */
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-size_t binary_search_coo(const SIZE_TYPE* rows, const SIZE_TYPE* cols, SIZE_TYPE row, SIZE_TYPE col, size_t low, size_t high) {
+SIZE_TYPE binary_search_coo(const SIZE_TYPE* rows, const SIZE_TYPE* cols, SIZE_TYPE row, SIZE_TYPE col, SIZE_TYPE low, SIZE_TYPE high) {
     while (low < high) {
-        size_t mid = (low + high) / 2;
+        SIZE_TYPE mid = (low + high) / 2;
         if ((rows[mid] < row) || (rows[mid] == row && cols[mid] < col))
             low = mid + 1;
         else
@@ -485,11 +488,11 @@ size_t binary_search_coo(const SIZE_TYPE* rows, const SIZE_TYPE* cols, SIZE_TYPE
 *This function merges two sorted COO matrices into a single sorted COO matrix using multi-threading.
 */
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-size_t parallel_merge_sorted_coos(const SIZE_TYPE* m_rows, const SIZE_TYPE* m_cols, const VALUE_TYPE* m_vals,
+SIZE_TYPE parallel_merge_sorted_coos(const SIZE_TYPE* m_rows, const SIZE_TYPE* m_cols, const VALUE_TYPE* m_vals,
                                   const SIZE_TYPE* n_rows, const SIZE_TYPE* n_cols, const VALUE_TYPE* n_vals,
                                   SIZE_TYPE* c_rows, SIZE_TYPE* c_cols, VALUE_TYPE* c_vals,
-                                  size_t m_size, size_t n_size, int num_threads) {
-    size_t duplicates = 0;
+                                  SIZE_TYPE m_size, SIZE_TYPE n_size, int num_threads) {
+    SIZE_TYPE duplicates = 0;
 
     // Step 1: Determine chunk ranges for m and corresponding n ranges
     #pragma omp parallel num_threads(num_threads)

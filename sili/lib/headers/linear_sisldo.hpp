@@ -11,34 +11,34 @@
  * In practice there are almost always enough synapses and inputs that the output is dense.
  * Use top_k, gaussian, positive-only, etc. methods to sparsify the output before sending to another layer.
  */
-template <typename Index, typename Value>
+template <typename SIZE_TYPE, typename VALUE_TYPE>
 void sparse_linear_csr_csc_forward(
-    const csr_struct<Index, Value>& input_tensor,
-    const csr_struct<Index, Value>& weight_tensor,
-    Value* output,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
+    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    VALUE_TYPE* output,
     bool train,
     //Value beta=0.9, // beta may be larger than optim beta to induce sparsity
-    Value solidify=0.01 // multiplies importances by 1.0+solidify so eventually they become very hard to remove
-
+    VALUE_TYPE solidify=0.01 // multiplies importances by 1.0+solidify so eventually they become very hard to remove
 ){
     #pragma omp parallel
     {
-        for (Index batch_number = 0; batch_number < input_tensor.rows; batch_number++)
+        for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++)
         {
             #pragma omp for  // omp parallelization on input, not batch, because batch is assumed to be small
-            for (Index input_ptr = input_tensor.ptrs[batch_number]; input_ptr < input_tensor.ptrs[batch_number + 1]; input_ptr++)
+            for (SIZE_TYPE input_ptr = input_tensor.ptrs[0][batch_number]; input_ptr < input_tensor.ptrs[0][batch_number + 1]; input_ptr++)
             {
-                Index input_index = input_tensor.indices[input_ptr];
-                Value input_value = input_tensor.values[input_ptr];
+                SIZE_TYPE input_index = input_tensor.indices[0][input_ptr];
+                VALUE_TYPE input_value = input_tensor.values[0][input_ptr];
 
-                for (Index weight_ptr = weight_tensor.ptrs[input_index]; weight_ptr < weight_tensor.ptrs[input_index + 1]; weight_ptr++)
+                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; weight_ptr < weights.connections.ptrs[0][input_index + 1]; weight_ptr++)
                 {
                     // Note: For CSC, we're using 'input_index' as the row index due to the transpose nature of CSC
-                    Value weight_value = weight_tensor.values[weight_ptr];
-                    Index output_index = weight_tensor.indices[weight_ptr];
+                    VALUE_TYPE weight_value = weights.connections.values[0][weight_ptr];
+                    SIZE_TYPE output_index = weights.connections.indices[0][weight_ptr];
                     auto weight_contribution = weight_value*input_value;
                     if(train){
-                        weight_tensor.importances[weight_ptr] = weight_tensor.importances[weight_ptr] + weight_contribution*solidify;
+                        //importances should be third, after backprop
+                        weights.connections.values[2][weight_ptr] = weights.connections.values[2][weight_ptr] + weight_contribution*solidify;
                     }
 
                     #pragma omp atomic
@@ -208,11 +208,12 @@ void sparse_linear_vectorized_backward_is(
     const csr_struct<Index, Value>& output_gradients_reduced, // this should be a fraction of output gradients for potentially making in*out new synapses
     Value* input_gradients,
     Value* output_gradients, // this is the full gradient for computing the full input gradient
-    csr_struct<Index, Value>& weight_gradients,
+    csr_struct<Index, Value>& weight_gen_gradients,
     const int num_cpus)
 {
     if (input_tensor.nnz()>0 && output_gradients_reduced.nnz()>0){
-        weight_gradients = generate_new_weights_csc(input_tensor, output_gradients_reduced, num_cpus);
+        // todo: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
+        weight_gen_gradients = generate_new_weights_csc(input_tensor, output_gradients_reduced, num_cpus);
     }
 
 #pragma omp parallel
@@ -230,6 +231,7 @@ void sparse_linear_vectorized_backward_is(
                     auto weight_value = weight_values[weight_ptr];
                     int output_index = weight_output_indices[weight_ptr];
                     input_gradients[input_ptr] += weight_value * output_gradients[output_index * batch_size + batch];
+                    weight_tensor.echo_gradients[weight_ptr] += output_gradients[output_index * batch_size + batch] * input_value;  // gradients for an echo state network
                 }
             }
         }
