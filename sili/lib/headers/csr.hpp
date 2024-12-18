@@ -1,13 +1,14 @@
 #ifndef __CSR__HPP_
 #define __CSR__HPP_
 
+#include "sparse_struct.hpp"
+
 #include "coo.hpp"
 #include "unique_vector.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <ctime>
 #include <iterator>
-#include <memory>
 #include <omp.h>
 #include <random>
 
@@ -15,148 +16,9 @@
 #include <array>
 #include <type_traits>
 
-// Sub-template for pointers
-template <class SIZE_TYPE>
-using CSRPointers = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
-
-template <class SIZE_TYPE>
-using CSRIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
-
-template <class SIZE_TYPE>
-using COOPointers = SIZE_TYPE;  // just store nnz
-
-template <class SIZE_TYPE>
-using COOIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 2>;
-
-template <class VALUE_TYPE>
-using UnaryValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 1>;
-
-template <class VALUE_TYPE>
-using BiValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 2>;
-
-template <class VALUE_TYPE>
-using TriValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 3>;
-
-template <class VALUE_TYPE>
-using QuadValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 4>;
-
-template <class VALUE_TYPE>
-using PentaValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 5>;
-
-// CSR Struct with sub-templates
-template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
-struct csr_struct {
-    PTRS ptrs;               // Pointers sub-template
-    INDICES indices;         // Indices sub-template
-    VALUES values;           // Values sub-template
-    SIZE_TYPE rows;
-    SIZE_TYPE cols;
-    SIZE_TYPE _reserved_indices_and_values = 0;
-
-    // Default constructor
-    csr_struct()
-        : rows(0), cols(0), _reserved_indices_and_values(0) {}
-
-    // Constructor for pre-allocated arrays
-    csr_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
-        : ptrs(std::move(p)), indices(std::move(ind)), values(std::move(val)),
-          rows(num_p), cols(max_idx), _reserved_indices_and_values(reserved) {}
-
-    // Constructor without reserved size
-    csr_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx)
-        : csr_struct(std::move(p), std::move(ind), std::move(val), num_p, max_idx, 0) {}
-
-    // Get the number of non-zeros
-    SIZE_TYPE nnz() const {
-        if constexpr (std::is_array_v<decltype(ptrs)>) { // Check if ptrs is an array type
-            return (ptrs[ptrs.size()-1] != nullptr) ? ptrs[ptrs.size()-1][rows] : 0;
-        } else { // ptrs is a single nnz value
-            return ptrs;
-        }
-    }
-
-    // Access specific pointer, index, or value arrays
-    SIZE_TYPE* get_ptr(std::size_t index) {
-        return ptrs.ptrs[index].get();
-    }
-    const SIZE_TYPE* get_ptr(std::size_t index) const {
-        return ptrs.ptrs[index].get();
-    }
-
-    SIZE_TYPE* get_index(std::size_t index) {
-        return indices.indices[index].get();
-    }
-    const SIZE_TYPE* get_index(std::size_t index) const {
-        return indices.indices[index].get();
-    }
-
-    template <std::size_t INDEX>
-    auto get_value() -> decltype(values.values[INDEX].get()) {
-        return values.values[INDEX].get();
-    }
-
-    template <std::size_t INDEX>
-    auto get_value() const -> decltype(values.values[INDEX].get()) {
-        return values.values[INDEX].get();
-    }
-
-    // Reserve space for indices and values
-    void reserve(SIZE_TYPE new_reserved) {
-        if (new_reserved > _reserved_indices_and_values) {
-            _reserved_indices_and_values = new_reserved;
-
-            // Resize index arrays
-            for (std::size_t i = 0; i < indices.indices.size(); ++i) {
-                auto new_indices = std::make_unique<SIZE_TYPE[]>(new_reserved);
-                if (indices.indices[i]) {
-                    std::copy(indices.indices[i].get(), indices.indices[i].get() + nnz(), new_indices.get());
-                }
-                indices.indices[i] = std::move(new_indices);
-            }
-
-            // Resize value arrays
-            for (std::size_t i = 0; i < values.values.size(); ++i) {
-                auto new_values = std::make_unique<typename std::remove_reference<decltype(*values.values[i])>::type[]>(new_reserved);
-                if (values.values[i]) {
-                    std::copy(values.values[i].get(), values.values[i].get() + nnz(), new_values.get());
-                }
-                values.values[i] = std::move(new_values);
-            }
-        }
-    }
-};
-
-// tri = weight multiplier, backprop, importance (for optim). Adagrad would use 2 for optim, using quad.
-// Since all these have the same indices, it's much cheaper to store them in the same csr.
-template <class SIZE_TYPE, class VALUE_TYPE>
-using CSRSynapses = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, TriValues<VALUE_TYPE> >;
-// easier to use in some algorithms
-template <class SIZE_TYPE, class VALUE_TYPE>
-using COOSynapses = csr_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, TriValues<VALUE_TYPE> >;
-
-// new weights are pre-optim and didn't contribute to forward, so no values and no importance yet, only grad.
-template <class SIZE_TYPE, class VALUE_TYPE>
-using CSRSynaptogenesis = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
-
-template <class SIZE_TYPE, class VALUE_TYPE>
-using CSRInput = csr_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
-
-//easier to use in some algorithms
-template <class SIZE_TYPE, class VALUE_TYPE>
-using COOSynaptogenesis = csr_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE> >;
-
-template <class SYNAPSES, class SYNAPTOGENESIS>
-struct sparse_weights{
-    SYNAPSES connections;
-    SYNAPTOGENESIS probes;
-};
-
-template <class SIZE_TYPE, class VALUE_TYPE>
-using SparseLinearWeights = sparse_weights<CSRSynapses<SIZE_TYPE, VALUE_TYPE>, COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>>;
-
 const size_t min_work_per_thread = 500;
-/*
-template <class SIZE_TYPE, class VALUE_TYPE>
+
+/*template <class SIZE_TYPE, class VALUE_TYPE>
 csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
                                                      const sili::unique_vector<sili::unique_vector<VALUE_TYPE>> *values,
                                                      SIZE_TYPE num_col,
@@ -204,13 +66,14 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<s
     csr.cols = num_col;
 
     return csr;
-}
+}*/
 
 // merges two CSRs
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_TYPE> &a_csr,
-                                             const csr_struct<SIZE_TYPE, VALUE_TYPE> &b_csr,
-                                             const int num_cpus) {
+template <typename SIZE_TYPE, typename VALUE_ARRAYS>
+sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> merge_csrs(
+    const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &a_csr,
+    const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &b_csr,
+    const int num_cpus) {
     SIZE_TYPE total_nnz = a_csr.nnz() + b_csr.nnz();
 
     auto& max_csr = std::max(a_csr.nnz(), b_csr.nnz())==a_csr.nnz()?a_csr:b_csr;
@@ -222,7 +85,13 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
     // Arrays for row and column positions
     SIZE_TYPE *rows = new SIZE_TYPE[total_nnz];
     SIZE_TYPE *cols = new SIZE_TYPE[total_nnz];
-    VALUE_TYPE *vals = new VALUE_TYPE[total_nnz];
+    VALUE_ARRAYS vals;
+    
+    constexpr std::size_t numArrays = std::tuple_size<VALUE_ARRAYS>::value;
+    using VALUE_TYPE = VALUE_ARRAYS::value_type;
+    for (std::size_t i = 0; i < numArrays; ++i) {
+        vals[i] = std::unique_ptr<VALUE_TYPE[]>(new VALUE_TYPE[total_nnz]);
+    }
 
     SIZE_TYPE duplicates;
 
@@ -237,8 +106,15 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
 
         //SIZE_TYPE row = std::max(0, std::upper_bound(a_csr.ptrs.get(), a_csr.ptrs.get() + a_csr.rows, start)-a_csr.ptrs.get()));
 
-        SIZE_TYPE row = static_cast<SIZE_TYPE>(std::max(static_cast<std::ptrdiff_t>(0), 
-    std::upper_bound(min_csr.ptrs.get(), min_csr.ptrs.get() + min_csr.rows, start) - min_csr.ptrs.get()-1));
+        SIZE_TYPE row = static_cast<SIZE_TYPE>(
+            std::max(
+                static_cast<std::ptrdiff_t>(0), 
+                std::upper_bound
+                (
+                    min_csr.ptrs.get(), 
+                    min_csr.ptrs.get() + min_csr.rows, start) - min_csr.ptrs.get()-1
+                )
+            );
 
         SIZE_TYPE iter = start;
         while (iter < end_min) {
@@ -247,12 +123,14 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
             }
             rows[iter] = row;
             cols[iter] = min_csr.indices[iter];
-            vals[iter] = min_csr.values[iter];
+            for (std::size_t i = 0; i < numArrays; ++i) {
+                vals[i][iter] = min_csr.values[i][iter];
+            }
             iter++;
         }
 
         row = static_cast<SIZE_TYPE>(std::max(static_cast<std::ptrdiff_t>(0), 
-    std::upper_bound(max_csr.ptrs.get(), max_csr.ptrs.get() + max_csr.rows, start) - max_csr.ptrs.get()-1));
+        std::upper_bound(max_csr.ptrs.get(), max_csr.ptrs.get() + max_csr.rows, start) - max_csr.ptrs.get()-1));
 
         iter = start;
         while (iter < end_max) {
@@ -261,7 +139,9 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
             }
             rows[iter + min_csr.nnz()] = row;
             cols[iter + min_csr.nnz()] = max_csr.indices[iter];
-            vals[iter + min_csr.nnz()] = max_csr.values[iter];
+            for (std::size_t i = 0; i < numArrays; ++i) {
+                vals[i][iter + min_csr.nnz()] = min_csr.values[i][iter];
+            }
             iter++;
         }
 
@@ -321,7 +201,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> merge_csrs(const csr_struct<SIZE_TYPE, VALUE_T
     // duplicated code end
 }
 
-template<class SIZE_TYPE>
+/*template<class SIZE_TYPE>
 inline int get_col(int ptr, int row_start_ptr, SIZE_TYPE* indices, int cols, int end){
         if(ptr<0){
             return -1;

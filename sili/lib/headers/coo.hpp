@@ -69,54 +69,83 @@ Stars, because they're sparse like COOs:
 *
 * @return Number of duplicates removed during merging.
 */
+#include "sparse_struct.hpp"
 #include <algorithm>
+#include <cstddef>
 #include <omp.h>
 #include <vector>
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-SIZE_TYPE inplace_merge_coo(SIZE_TYPE *cols,
-                            SIZE_TYPE *rows,
-                            VALUE_TYPE *vals,
-                            SIZE_TYPE left,
-                            SIZE_TYPE mid,
-                            SIZE_TYPE right) {
-    SIZE_TYPE i = left;
-    SIZE_TYPE j = mid + 1;
-    SIZE_TYPE duplicates = 0;
+
+template <typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+std::size_t inplace_merge_coo(INDEX_ARRAYS &indices,
+                            VALUE_ARRAYS &values,
+                            std::size_t left,
+                            std::size_t mid,
+                            std::size_t right) {
+    constexpr std::size_t numValues = std::tuple_size<VALUE_ARRAYS>::value;
+    //using VALUE_TYPE = VALUE_ARRAYS::value_type;
+    using VALUE_TYPE = typename std::tuple_element<0, VALUE_ARRAYS>::type::value_type;
+    constexpr std::size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
+    //using INDEX_TYPE = VALUE_ARRAYS::value_type;
+    using INDEX_TYPE = typename std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
+
+    INDEX_TYPE i = left;
+    INDEX_TYPE j = mid + 1;
+    INDEX_TYPE duplicates = 0;
 
     // Traverse both subarrays and merge in-place
     while (i <= mid && j <= right) {
         // If the element in the left half is smaller, move on
-        if (rows[i] < rows[j] || (rows[i] == rows[j] && cols[i] < cols[j])) {
+        // Compare indices in lexicographical order
+        bool less_than = false;
+        bool equal = true;
+        for (std::size_t idx = 0; idx < numIndices; ++idx) {
+            if (std::get<idx>(indices)[i] < std::get<idx>(indices)[j]) {
+                less_than = true;
+                equal = false;
+                break;
+            } else if (std::get<idx>(indices)[i] > std::get<idx>(indices)[j]) {
+                less_than = false;
+                equal = false;
+                break;
+            }
+        }
+
+        if (less_than) {
             i++;
-        } else if (rows[i] == rows[j] && cols[i] == cols[j]) {
-            // sum duplicates
-            vals[i]+=vals[j];
-            // Duplicate found, remove the element from the right subarray
-            for (SIZE_TYPE k = j; k <= right; k++) {
-                rows[k] = rows[k + 1];
-                cols[k] = cols[k + 1];
-                vals[k] = vals[k + 1];
+        } else if (equal) {
+            // Sum duplicate values
+            for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                std::get<valIdx>(values)[i] += std::get<valIdx>(values)[j];
+            }
+            // Remove duplicate entry from the right subarray
+            for (INDEX_TYPE k = j; k < right; ++k) {
+                for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                    std::get<idx>(indices)[k] = std::get<idx>(indices)[k + 1];
+                }
+                for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                    std::get<valIdx>(values)[k] = std::get<valIdx>(values)[k + 1];
+                }
             }
             duplicates++;
             #pragma omp atomic
             right--;
         } else {
-            // Element in the right half is smaller, rotate to the left
-            SIZE_TYPE temp_row = rows[j];
-            SIZE_TYPE temp_col = cols[j];
-            VALUE_TYPE temp_val = vals[j];
-
-            // Shift elements from i to j-1 one position to the right
-            for (SIZE_TYPE k = j; k > i; k--) {
-                rows[k] = rows[k - 1];
-                cols[k] = cols[k - 1];
-                vals[k] = vals[k - 1];
+            // Rotate element from right half to left
+            for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                INDEX_TYPE temp_idx = std::get<idx>(indices)[j];
+                for (INDEX_TYPE k = j; k > i; --k) {
+                    std::get<idx>(indices)[k] = std::get<idx>(indices)[k - 1];
+                }
+                std::get<idx>(indices)[i] = temp_idx;
             }
 
-            // Place the j-th element in its correct position
-            rows[i] = temp_row;
-            cols[i] = temp_col;
-            vals[i] = temp_val;
+            for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                VALUE_TYPE temp_val = std::get<valIdx>(values)[j];
+                for (INDEX_TYPE k = j; k > i; --k) {
+                    std::get<valIdx>(values)[k] = std::get<valIdx>(values)[k - 1];
+                }
+                std::get<valIdx>(values)[i] = temp_val;
+            }
 
             // Update indices
             i++;
@@ -141,34 +170,75 @@ SIZE_TYPE inplace_merge_coo(SIZE_TYPE *cols,
 *
 * @return Number of duplicates removed during sorting.
 */
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-SIZE_TYPE insertion_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals, SIZE_TYPE left, SIZE_TYPE right) {
-    SIZE_TYPE duplicates = 0;
-    for (unsigned long i = left + 1; i <= right; i++) {
-        SIZE_TYPE temp_row = rows[i];
-        SIZE_TYPE temp_col = cols[i];
-        VALUE_TYPE temp_val = vals[i];
-        SIZE_TYPE j = i;
-        while (j > left && (rows[j - 1] > temp_row || (rows[j - 1] == temp_row && cols[j - 1] > temp_col))) {
-            rows[j] = rows[j - 1];
-            cols[j] = cols[j - 1];
-            vals[j] = vals[j - 1];
+template <typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+std::size_t insertion_sort_coo(INDEX_ARRAYS &indices,
+                            VALUE_ARRAYS &values, 
+                            std::size_t left, 
+                            std::size_t right) {
+    constexpr std::size_t numValues = std::tuple_size<VALUE_ARRAYS>::value;
+    //using VALUE_TYPE = VALUE_ARRAYS::value_type;
+    using VALUE_TYPE = typename std::tuple_element<0, VALUE_ARRAYS>::type::value_type;
+    constexpr std::size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
+    //using INDEX_TYPE = VALUE_ARRAYS::value_type;
+    using INDEX_TYPE = typename std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
+
+    INDEX_TYPE duplicates = 0;
+    for (INDEX_TYPE i = left + 1; i <= right; i++) {
+        VALUE_TYPE temp_indices[numIndices];
+        VALUE_TYPE temp_values[numValues];
+        for (std::size_t idx = 0; idx < numIndices; ++idx) {
+            temp_indices[idx] = std::get<idx>(indices)[i];
+        }
+        for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+            temp_values[valIdx] = std::get<valIdx>(values)[i];
+        }
+        INDEX_TYPE j = i;
+        while (j > left ) {
+            for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                if (!(std::get<idx>(indices)[j - 1] > temp_indices[idx])) {
+                    break;
+                }
+            }
+            for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                std::get<idx>(indices)[j] = std::get<idx>(indices)[j - 1];
+            }
+            for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                std::get<valIdx>(values)[j] = std::get<valIdx>(values)[j - 1];
+            }
             j--;
         }
-        // Insert (temp_row, temp_col, temp_val) at its correct position
-        rows[j] = temp_row;
-        cols[j] = temp_col;
-        vals[j] = temp_val;
+        // Insert the current element into its correct position
+        for (std::size_t idx = 0; idx < numIndices; ++idx) {
+            std::get<idx>(indices)[j] = temp_indices[idx];
+        }
+        for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+            std::get<valIdx>(values)[j] = temp_values[valIdx];
+        }
 
         // Check for duplicates after insertion
-        if (j > left && rows[j] == rows[j - 1] && cols[j] == cols[j - 1]) {
-            // sum duplicates
-            vals[j-1]+= vals[j];
-            // Duplicate found, remove the current element
-            for (SIZE_TYPE k = j; k < right; k++) {
-                rows[k] = rows[k + 1];
-                cols[k] = cols[k + 1];
-                vals[k] = vals[k + 1];
+        bool is_duplicate = true;
+        if (j > left) {
+            for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                if (std::get<idx>(indices)[j] != std::get<idx>(indices)[j - 1]) {
+                    is_duplicate = false;
+                    break;
+                }
+            }
+        }
+
+        if (is_duplicate) {
+            for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                std::get<valIdx>(values)[j - 1] += std::get<valIdx>(values)[j];
+            }
+
+            // Remove the duplicate element
+            for (INDEX_TYPE k = j; k < right; ++k) {
+                for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                    std::get<idx>(indices)[k] = std::get<idx>(indices)[k + 1];
+                }
+                for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                    std::get<valIdx>(values)[k] = std::get<valIdx>(values)[k + 1];
+                }
             }
             duplicates++;
             #pragma omp atomic
@@ -194,34 +264,43 @@ SIZE_TYPE insertion_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals,
  *
 * @return Total number of duplicates removed during sorting.
  */
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-SIZE_TYPE recursive_merge_sort_coo(SIZE_TYPE *cols,
-                                   SIZE_TYPE *rows,
-                                   VALUE_TYPE *vals,
-                                   SIZE_TYPE left,
-                                   SIZE_TYPE right,
-                                   SIZE_TYPE duplicates) {
+template <typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+std::size_t recursive_merge_sort_coo(INDEX_ARRAYS &indices,
+                                   VALUE_ARRAYS &values,
+                                   std::size_t left,
+                                   std::size_t right,
+                                   std::size_t duplicates) {
+    constexpr std::size_t numValues = std::tuple_size<VALUE_ARRAYS>::value;
+    //using VALUE_TYPE = VALUE_ARRAYS::value_type;
+    using VALUE_TYPE = typename std::tuple_element<0, VALUE_ARRAYS>::type::value_type;
+    constexpr std::size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
+    //using INDEX_TYPE = VALUE_ARRAYS::value_type;
+    using INDEX_TYPE = typename std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
+
     if (left < right) {
         if (right - left >= 32) {
-            SIZE_TYPE mid = (left + right) / 2;
-            SIZE_TYPE left_duplicates = 0;
-            SIZE_TYPE right_duplicates = 0;
+            std::size_t mid = (left + right) / 2;
+            std::size_t left_duplicates = 0;
+            std::size_t right_duplicates = 0;
 #pragma omp taskgroup
             {
 #pragma omp task shared(cols, rows, vals, left_duplicates) untied if (right - left >= (1 << 14))
-                left_duplicates= recursive_merge_sort_coo(cols, rows, vals, left, mid, (SIZE_TYPE)0);
+                left_duplicates= recursive_merge_sort_coo(indices, values, left, mid, (std::size_t)0);
 #pragma omp task shared(cols, rows, vals, right_duplicates) untied if (right - left >= (1 << 14))
-                right_duplicates= recursive_merge_sort_coo(cols, rows, vals, mid + 1, right, (SIZE_TYPE)0);
+                right_duplicates= recursive_merge_sort_coo(indices, values, mid + 1, right, (std::size_t)0);
 #pragma omp taskyield
             }
 
             // Adjust indices after handling duplicates
             if (left_duplicates > 0) {
                 // Shift the right subarray to the left by left_duplicates
-                for (SIZE_TYPE i = mid + 1; i <= right; i++) {
-                    rows[i - left_duplicates] = rows[i];
-                    cols[i - left_duplicates] = cols[i];
-                    vals[i - left_duplicates] = vals[i];
+                for (INDEX_TYPE i = mid + 1; i <= right; i++) {
+                    for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                        std::get<idx>(indices)[i - left_duplicates] = std::get<idx>(indices)[i];
+                    }
+                    for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                        std::get<valIdx>(values)[i - left_duplicates] = std::get<valIdx>(values)[i + 1];
+                    }
                 }
                 mid -= left_duplicates;  // Adjust mid after the shift
                 right -= left_duplicates;  // Adjust right boundary after the shift
@@ -231,9 +310,9 @@ SIZE_TYPE recursive_merge_sort_coo(SIZE_TYPE *cols,
                 right -= right_duplicates;  // Adjust right for right-side duplicates
             }
 
-            duplicates += inplace_merge_coo(cols, rows, vals, left, mid, right) + left_duplicates + right_duplicates;
+            duplicates += inplace_merge_coo(indices, values, left, mid, right) + left_duplicates + right_duplicates;
         } else {
-            duplicates += insertion_sort_coo(cols, rows, vals, left, right);
+            duplicates += insertion_sort_coo(indices, values, left, right);
         }
     }
     return duplicates;
@@ -253,12 +332,12 @@ SIZE_TYPE recursive_merge_sort_coo(SIZE_TYPE *cols,
  *
 * @return Total number of duplicates removed during sorting.
  */
-template <typename SIZE_TYPE, typename VALUE_TYPE, typename SIZE_TYPE_2>
-SIZE_TYPE merge_sort_coo(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals, SIZE_TYPE_2 size) {
+template <typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+std::size_t merge_sort_coo(INDEX_ARRAYS &indices, VALUE_ARRAYS &values, std::size_t size) {
     int duplicates = 0;
 #pragma omp parallel
 #pragma omp single
-    duplicates+=recursive_merge_sort_coo(cols, rows, vals, 0, (SIZE_TYPE)size - 1, 0);
+    duplicates+=recursive_merge_sort_coo(indices, values, 0, (std::size_t)size - 1, 0);
 
     return duplicates;
 }
@@ -495,7 +574,7 @@ SIZE_TYPE parallel_merge_sorted_coos(const SIZE_TYPE* m_rows, const SIZE_TYPE* m
     SIZE_TYPE duplicates = 0;
 
     // Step 1: Determine chunk ranges for m and corresponding n ranges
-    #pragma omp parallel num_threads(num_threads)
+    #pragma omp parallel num_threads(num_threads) reduction(+:duplicates)
     {
         int thread_id = omp_get_thread_num();
         size_t chunk_size = (m_size + num_threads - 1) / num_threads; // Ceiling division
@@ -518,53 +597,49 @@ SIZE_TYPE parallel_merge_sorted_coos(const SIZE_TYPE* m_rows, const SIZE_TYPE* m
         while (i < m_end && j < n_end) {
             if ((m_rows[i] < n_rows[j]) || (m_rows[i] == n_rows[j] && m_cols[i] <= n_cols[j])) {
                 if (k > 0 && c_rows[k - 1] == m_rows[i] && c_cols[k - 1] == m_cols[i]) {
-                    #pragma omp atomic
                     c_vals[k - 1] += m_vals[i]; // Sum duplicates
-                    #pragma omp atomic
                     duplicates++;
                 } else {
                     c_rows[k] = m_rows[i];
                     c_cols[k] = m_cols[i];
-                    c_vals[k++] = m_vals[i];
+                    c_vals[k] = m_vals[i];
+                    k++;
                 }
                 i++;
             } else {
                 if (k > 0 && c_rows[k - 1] == n_rows[j] && c_cols[k - 1] == n_cols[j]) {
-                    #pragma omp atomic
                     c_vals[k - 1] += n_vals[j]; // Sum duplicates
-                    #pragma omp atomic
                     duplicates++;
                 } else {
                     c_rows[k] = n_rows[j];
                     c_cols[k] = n_cols[j];
-                    c_vals[k++] = n_vals[j];
+                    c_vals[k] = n_vals[j];
+                    k++;
                 }
                 j++;
             }
         }
         while (i < m_end) {
             if (k > 0 && c_rows[k - 1] == m_rows[i] && c_cols[k - 1] == m_cols[i]) {
-                #pragma omp atomic
                 c_vals[k - 1] += m_vals[i]; // Sum duplicates
-                #pragma omp atomic
                 duplicates++;
             } else {
                 c_rows[k] = m_rows[i];
                 c_cols[k] = m_cols[i];
-                c_vals[k++] = m_vals[i];
+                c_vals[k] = m_vals[i];
+                k++;
             }
             i++;
         }
         while (j < n_end) {
             if (k > 0 && c_rows[k - 1] == n_rows[j] && c_cols[k - 1] == n_cols[j]) {
-                #pragma omp atomic
                 c_vals[k - 1] += n_vals[j]; // Sum duplicates
-                #pragma omp atomic
                 duplicates++;
             } else {
                 c_rows[k] = n_rows[j];
                 c_cols[k] = n_cols[j];
-                c_vals[k++] = n_vals[j];
+                c_vals[k] = n_vals[j];
+                k++;
             }
             j++;
         }

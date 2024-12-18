@@ -50,36 +50,33 @@ void sparse_linear_csr_csc_forward(
 }
 
 
-template <typename Index, typename Value>
+template <typename SIZE_TYPE, typename VALUE_TYPE>
 void outer_product_spv_coo(
-    const csr_struct<Index, Value>& input_tensor,
-    const csr_struct<Index, Value>& output_gradient_tensor,
-    Index* cols,
-    Index* rows,
-    Value* vals
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& output_gradient_tensor,
+    COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen  // asumes gen is pre-reserved
     ){
 
-    for (Index batch = 0; batch < input_tensor.rows; batch++) {
-        Index in_len = input_tensor.ptrs[batch+1]-input_tensor.ptrs[batch];
-        Index out_len = output_gradient_tensor.ptrs[batch+1]-output_gradient_tensor.ptrs[batch];
-        Index prod_start_pos = input_tensor.ptrs[batch]*output_gradient_tensor.ptrs[batch];
+    for (SIZE_TYPE batch = 0; batch < input_tensor.rows; batch++) {
+        SIZE_TYPE in_len = input_tensor.ptrs[0][batch+1]-input_tensor.ptrs[0][batch];
+        SIZE_TYPE out_len = output_gradient_tensor.ptrs[0][batch+1]-output_gradient_tensor.ptrs[0][batch];
+        SIZE_TYPE prod_start_pos = input_tensor.ptrs[0][batch]*output_gradient_tensor.ptrs[0][batch];
 
         #pragma omp parallel for
-        for (Index i = 0; i < in_len*out_len; i++) {
-            Index x = i % top_x;
-            Index y = i / top_x;
-            Index global_id = prod_start_pos+y*top_x+x;
+        for (SIZE_TYPE i = 0; i < in_len*out_len; i++) {
+            SIZE_TYPE x = i / out_len;
+            SIZE_TYPE y = i % out_len;
+            SIZE_TYPE global_id = prod_start_pos+x*out_len+y;
 
-            // Compute the new weight value in COO format
-            cols[global_id] = input_m_indices[input_batch_offsets[batch + 1] - x]; // input index
-            rows[global_id] = output_gradient_indices[output_gradient_batch_offsets[batch + 1] - y]; // output index
-            vals[global_id] = input_values[input_batch_offsets[batch + 1] - x]*output_gradient_values[output_gradient_batch_offsets[batch + 1] - y] // value
-            );
+            // Compute the new weight value in COO format (indices0=cols, indices1=rows)
+            gen.indices[0][global_id] = input_tensor.indices[0][input_tensor.ptrs[0][batch] + x]; // input index
+            gen.indices[1][global_id] = output_gradient_tensor.indices[0][output_gradient_tensor.ptrs[0][batch] + y]; // output index
+            gen.values[0][global_id] = input_tensor.values[0][input_tensor.ptrs[0][batch] + x]*output_gradient_tensor.values[0][output_gradient_tensor.ptrs[0][batch] + y]; // value
         }
     }
 }
 
-template <typename Index, typename Value>
+/*template <typename Index, typename Value>
 std::vector<std::tuple<Index, Index, Value>> coalesce_coo(
     const std::vector<std::tuple<Index, Index, Value>>& coo_tuples)
 {
@@ -101,96 +98,86 @@ std::vector<std::tuple<Index, Index, Value>> coalesce_coo(
     }
 
     return unique_coo;
-}
+}*/
 
-template <typename Index, typename Value>
-csr_struct<Index, Value> coo_to_csc(
-    const Index *cols,
-    const Index *rows,
-    const Value *vals,
-    Index num_rows,
-    Index num_cols,
-    Index nnz,  //nnz AFTER duplicates were removed
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> coo_to_csc(
+    const COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen_coo,
     const int num_cpus)
 {
-    SIZE_TYPE *accum = new SIZE_TYPE[num_cols];
-    std::fill(accum,accum+num_cols,0);
+    SIZE_TYPE *accum = new SIZE_TYPE[gen_coo.cols];
+    std::fill(accum,accum+gen_coo.cols,0);
 //accumulate parallel
     //thx: https://stackoverflow.com/a/70625541
     if(num_cpus>1){
-    SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus*(num_cols)];
-    std::fill(thr_accum, thr_accum + num_cols*num_cpus, 0);
+    SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus*(gen_coo.cols)];
+    std::fill(thr_accum, thr_accum + gen_coo.cols*num_cpus, 0);
     #pragma omp parallel shared(accum, thr_accum, cols) num_threads(num_cpus)
   {
     int thread = omp_get_thread_num(),
-      myfirst = thread*(num_cols);
+      myfirst = thread*(gen_coo.cols);
     #pragma omp for
-    for ( int i=0; i<nnz; i++ )
-      thr_accum[ myfirst+cols[i] ]++;
+    for ( int i=0; i<gen_coo.nnz(); i++ )
+      thr_accum[ myfirst+gen_coo.indices[1][i] ]++;
     #pragma omp for
-    for ( int igrp=0; igrp<(num_cols); igrp++ )
+    for ( int igrp=0; igrp<(gen_coo.cols); igrp++ )
       for ( int t=0; t<num_cpus; t++ )
-        accum[igrp] += thr_accum[ t*(num_cols)+igrp ];
+        accum[igrp] += thr_accum[ t*(gen_coo.cols)+igrp ];
   }
     }else{
-        for ( int i=0; i<nnz; i++ )
-            accum[ cols[i] ]++;
+        for ( int i=0; i<gen_coo.nnz(); i++ )
+            accum[ gen_coo.indices[1][i] ]++;
     }
 
-    SIZE_TYPE *ptrs = new SIZE_TYPE[num_cols + 1];
+    SIZE_TYPE *ptrs = new SIZE_TYPE[gen_coo.cols + 1];
     SIZE_TYPE scan_a = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)
-    for (SIZE_TYPE i = 0; i < num_cols + 1; i++) {
+    for (SIZE_TYPE i = 0; i < gen_coo.cols + 1; i++) {
         ptrs[i] = scan_a;
 #pragma omp scan exclusive(scan_a)
         { scan_a += accum[i]; }
     }
 
     delete[] accum;
-    delete[] cols;
+    delete[] gen_coo.indices[1];
 
     // Return the new CSC matrix
-    csr_struct<SIZE_TYPE, VALUE_TYPE> return_csc;
-    return_csc.cols = num_cols;
-    return_csc.rows = num_rows;
-    return_csc.ptrs.reset(ptrs);
-    return_csc.indices.reset(rows);
-    return_csc.values.reset(vals);
+    CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> return_csc;
+    return_csc.cols = gen_coo.rows;
+    return_csc.rows = gen_coo.cols;
+    return_csc.ptrs[0].reset(ptrs);
+    return_csc.indices[0].reset(gen_coo.indices[0]);
+    return_csc.values[0].reset(gen_coo.values[0]);
 
     return return_csc;
 }
 
-template <typename Index, typename Value>
-csr_struct<Index, Value> generate_new_weights_csc(
-    const csr_struct<Index, Value>& input_tensor,
-    const csr_struct<Index, Value>& output_gradient_tensor,
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& output_gradient_tensor,
     const int num_cpus)
 {
     // SECTION 1: Create COO from top input and outputs in sparse vectors
-    Index *cols = new Index[input_tensor.nnz()*output_gradient_tensor.nnz()],
-    Index *rows = new Index[input_tensor.nnz()*output_gradient_tensor.nnz()],
-    Value *vals = new Value[input_tensor.nnz()*output_gradient_tensor.nnz()],
+    COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen_coo;
+    gen_coo.ptrs = input_tensor.nnz()*output_gradient_tensor.nnz();
+    gen_coo.indices[0].reset(new SIZE_TYPE[gen_coo.nnz()]);
+    gen_coo.indices[1].reset(new SIZE_TYPE[gen_coo.nnz()]);
+    gen_coo.values[0].reset(new VALUE_TYPE[gen_coo.nnz()]);
+    gen_coo.cols = output_gradient_tensor.rows;
+    gen_coo.rows = input_tensor.rows;
     outer_product_spv_coo(
         input_tensor,
         output_gradient_tensor,
-        cols, rows, vals
+        gen_coo
     );
 
     //SECTION 2: sort COO and merge duplicates
-    auto duplicates = merge_sort_coo(cols, rows, vals, input_tensor.nnz()*output_gradient_tensor.nnz())
+    auto duplicates = merge_sort_coo(gen_coo.indices[0], gen_coo.indices[1], gen_coo.values[0], gen_coo.nnz());
+    gen_coo.ptrs = gen_coo.ptrs - duplicates; //update nnz
 
     //SECTION 3: convert COO to CSC
-    Index total_elements = input_tensor.nnz()*output_gradient_tensor.nnz();
-    Index weight_cols = output_gradient_tensor.cols;
-    Index weight_rows = input_tensor.cols;
-    auto csc_out = coo_to_csc(
-        cols,
-        rows,
-        vals,
-        weight_rows,
-        weight_cols,
-        total_elements-duplicates,
-        num_cpus);
+    auto csc_out = coo_to_csc(gen_coo, num_cpus);
     return csc_out;
 }
 
@@ -199,65 +186,69 @@ csr_struct<Index, Value> generate_new_weights_csc(
  * This assumes the inputs and gradients were already masked, and will generate a new csc
  * with input.size*gradient.size synapses for addition/merging to the weight csc
  *
- * @param GenWeights Whether this function should generate 0 weights in weight_tensor so backprop can be applied
  */
-template <const bool GenWeights>
+template <class SIZE_TYPE, class VALUE_TYPE>
 void sparse_linear_vectorized_backward_is(
-    const csr_struct<Index, Value>& input_tensor,  // this should be a fraction of active inputs for potentially making in*out new synapses
-    const csr_struct<Index, Value>& weight_tensor,
-    const csr_struct<Index, Value>& output_gradients_reduced, // this should be a fraction of output gradients for potentially making in*out new synapses
-    Value* input_gradients,
-    Value* output_gradients, // this is the full gradient for computing the full input gradient
-    csr_struct<Index, Value>& weight_gen_gradients,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& in_tensor,  // this should be a fraction of active inputs for potentially making in*out new synapses
+    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad, // this should be a fraction of output gradients for potentially making in*out new synapses
+    VALUE_TYPE* input_gradients,
+    VALUE_TYPE* output_gradients, // this is the full gradient for computing the full input gradient
     const int num_cpus)
 {
-    if (input_tensor.nnz()>0 && output_gradients_reduced.nnz()>0){
+    SIZE_TYPE batch_size = in_tensor.rows;
+    if (in_tensor.nnz()>0 && out_grad.nnz()>0){
         // todo: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
-        weight_gen_gradients = generate_new_weights_csc(input_tensor, output_gradients_reduced, num_cpus);
+        weights.probes = generate_new_weights_csc(in_tensor, out_grad, num_cpus);
     }
 
-#pragma omp parallel
+#pragma omp parallel num_threads(num_cpus)
     {
-        for (int batch = 0; batch < input_tensor.rows; batch++)
+        for (SIZE_TYPE batch = 0; batch < in_tensor.rows; batch++)
         {
 #pragma omp for
-            for (int input_ptr = input_tensor.ptrs[batch]; input_ptr < input_tensor.ptrs[batch + 1]; input_ptr++)
+            for (SIZE_TYPE input_ptr = in_tensor.ptrs[0][batch]; input_ptr < in_tensor.ptrs[0][batch + 1]; input_ptr++)
             {
-                int input_index = input_m_indices[input_ptr];
-                auto input_value = input_values[input_ptr];
-                for (int weight_ptr = weight_col_offsets[input_index]; weight_ptr < weight_col_offsets[input_index + 1];
+                auto input_index = in_tensor.indices[0][input_ptr];
+                auto input_value = in_tensor.values[0][input_ptr];
+                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; weight_ptr < weights.connections.ptrs[0][input_index + 1];
                      weight_ptr++)
                 {
-                    auto weight_value = weight_values[weight_ptr];
-                    int output_index = weight_output_indices[weight_ptr];
-                    input_gradients[input_ptr] += weight_value * output_gradients[output_index * batch_size + batch];
-                    weight_tensor.echo_gradients[weight_ptr] += output_gradients[output_index * batch_size + batch] * input_value;  // gradients for an echo state network
+                    auto weight_value = weights.connections.values[0][weight_ptr];
+                    auto output_index = weights.connections.indices[0][weight_ptr];
+                    input_gradients[input_index] += weight_value * output_gradients[output_index * batch_size + batch];
+                    weights.connections.values[1][weight_ptr] += output_gradients[output_index * batch_size + batch] * input_value;  // gradients for an echo state network, stored after values
                 }
             }
         }
     }
 }
 
-template <typename Index, typename Value>
+template <typename SIZE_TYPE, typename VALUE_TYPE>
 void optimize_weights_with_importance(
-    csr_struct<Index, Value>& weight_tensor,
-    csr_struct<Index, Value>& weight_gradients,
-    const Value learning_rate,
-    const Value beta = 0.9; // Decay rate for importance updates
-    const Index max_weights,
-    const int num_cpus
+    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const VALUE_TYPE learning_rate,
+    const SIZE_TYPE max_weights,
+    const int num_cpus,
+    const VALUE_TYPE beta = 0.1 // rate for importance updates
 ) {
 
-    Value* importance_tensor = new Value[weight_gradients.nnz()];
+    VALUE_TYPE* importance_tensor = new VALUE_TYPE[weights.probes.nnz()];
     #pragma omp parallel num_threads(num_cpus)
-    for (int weight_ptr = 0; weight_ptr < weight_gradients.nnz(); weight_ptr++) {
+    for (int weight_ptr = 0; weight_ptr < weights.probes.nnz(); weight_ptr++) {
         // weight_activation will always be zero since there was no weight yet, so just use 0-weight_error instead
-        Value weight_error = weight_gradients.values[weight_ptr] / learning_rate;
-        Value weight_instant_importance = - weight_error;
+        VALUE_TYPE weight_error = weights.probes.values[0][weight_ptr] / learning_rate;
+        VALUE_TYPE weight_instant_importance = - weight_error;
 
         // Update importance tensor
         importance_tensor[weight_ptr] = weight_instant_importance;
     }
+
+    //1. move indices and values from probes to new CSR, non-copy
+    //2. update probes to have values[0]=0.0 values, values[1]=0.0 backprop, values[2]=importance
+    //3. combine with merge_csrs
+    //3a. copy algorithm from merge_csr and modify
+    //3b. update parallel_merge_sorted_coos to work with new COO structure
 
     // Convert CSR to COO format if required
     auto coo_weights = weight_tensor.to_coo();
@@ -276,8 +267,8 @@ void optimize_weights_with_importance(
      */
     //   so, if two same index weights show up, divide them by their importance
     size_t new_nnz = parallel_merge_sorted_coos(
-        coo_weights.rows, coo_weights.cols, coo_weights.values*-learning_rate , coo_weights.importances * (beta),
-        coo_updates.rows, coo_updates.cols, coo_updates.values, coo_gradients.importances * (1 - beta),
+        coo_weights.rows, coo_weights.cols, coo_weights.values*-learning_rate , coo_weights.importances * beta,
+        coo_updates.rows, coo_updates.cols, coo_updates.values, coo_gradients.importances * beta),
         merged_rows, merged_cols, merged_values,
         coo_weights.nnz(), coo_updates.nnz(), num_cpus);
 
@@ -292,6 +283,5 @@ void optimize_weights_with_importance(
         );
     }
 
-    // Convert merged weights back to CSR format
-    weight_tensor.from_coo(merged_rows, merged_cols, merged_values, new_nnz);
+    weights.connections = merge_csrs(weights.connections, weights.probes);
 }
