@@ -1,5 +1,6 @@
 #include "csr.hpp"
 #include "coo.hpp"
+#include <cstdlib>
 #include <new>
 
 /**
@@ -101,7 +102,7 @@ std::vector<std::tuple<Index, Index, Value>> coalesce_coo(
     return unique_coo;
 }*/
 
-template <typename SIZE_TYPE, typename VALUE_TYPE>
+/*template <typename SIZE_TYPE, typename VALUE_TYPE>
 CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> coo_to_csc(
     const COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen_coo,
     const int num_cpus)
@@ -151,7 +152,7 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> coo_to_csc(
     return_csc.values[0].reset(gen_coo.values[0]);
 
     return return_csc;
-}
+}*/
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
@@ -177,8 +178,8 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     auto duplicates = merge_sort_coo(gen_coo.indices[0], gen_coo.indices[1], gen_coo.values[0], gen_coo.nnz());
     gen_coo.ptrs = gen_coo.ptrs - duplicates; //update nnz
 
-    //SECTION 3: convert COO to CSC
-    auto csc_out = coo_to_csc(gen_coo, num_cpus);
+    //SECTION 3: convert COO to CSC (swap rows/cols in the coo for to_csr to work)
+    auto csc_out = to_csr(gen_coo, num_cpus);
     return csc_out;
 }
 
@@ -200,6 +201,7 @@ void sparse_linear_vectorized_backward_is(
     SIZE_TYPE batch_size = in_tensor.rows;
     if (in_tensor.nnz()>0 && out_grad.nnz()>0){
         // todo: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
+        // todo: handle the case where weights.probes already exists and merge potential weights into probes
         weights.probes = generate_new_weights_csc(in_tensor, out_grad, num_cpus);
     }
 
@@ -226,7 +228,26 @@ void sparse_linear_vectorized_backward_is(
 }
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-void optimize_weights_with_importance(
+void optim_weights(
+    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const VALUE_TYPE learning_rate,
+    const int num_cpus,
+    const VALUE_TYPE beta = 0.1 // rate for importance updates
+) {
+#pragma omp parallel num_threads(num_cpus)
+for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][0]; weight_ptr < weights.connections.ptrs[0][weights.connections.rows];
+                     weight_ptr++)
+                {
+                    auto weight_value = weights.connections.values[0][weight_ptr];
+                    //weight += grad*-lr/(1+abs(conn_str))
+                    weights.connections.values[0][weight_ptr] += (weights.connections.values[1][weight_ptr]*-learning_rate)/(1+std::abs(weights.connections.values[2][weight_ptr]));
+                     weights.connections.values[1][weight_ptr] = 0; // reset grad so we don't build it up.
+                }
+}
+
+//todo: split this up so different importance/optim handling types can be handled in python
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+void optim_synaptogenesis(
     const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     const VALUE_TYPE learning_rate,
     const SIZE_TYPE max_weights,
@@ -243,7 +264,7 @@ void optimize_weights_with_importance(
         VALUE_TYPE weight_instant_importance = - weight_error;
 
         // Update importance tensor
-        importance_tensor[weight_ptr] = weight_instant_importance;
+        importance_tensor[weight_ptr] = weight_instant_importance * beta;
     }
 
     decltype(weights.connections) new_connections;
@@ -276,12 +297,10 @@ void optimize_weights_with_importance(
         std::get<valIdx>(merged_coo.values).reset(new value_type[merged_size]);
     }
 
-    // STEP 4: Merge weights and updates
-    /* todo: importance values need to be merged and affect merging:
-     *   weight_importance = weight_importance * beta + gradient_importance * (1-beta)
-     *   weights = weights - learning_rate * gradients / (weight_importance + epsilon)
+    // STEP 4: Merge weights
+    /* this does:
+     *   weight_importance = weight_importance * beta + gradient_importance
      */
-    //   so, if two same index weights show up, divide them by their importance
     size_t duplicates = parallel_merge_sorted_coos(
         coo_weights.indices, coo_weights.values, 
         coo_updates.indices, coo_updates.values ,
@@ -309,7 +328,7 @@ void optimize_weights_with_importance(
             weight_out_container.indices, weight_out_container.values,
             new_nnz, new_nnz - max_weights, num_cpus
             );
-            weights.connections = to_csr(weight_out_container); // todo: write this function
+            weights.connections = to_csr(weight_out_container);
         }else{
             coo_subtract_bottom_k(
                 merged_coo.indices, merged_coo.values, 
@@ -321,5 +340,7 @@ void optimize_weights_with_importance(
     }else{
         weights.connections = to_csr(merged_coo);
     }
-    weights.probes.clear();// todo: write this function. It should release/delete all arrays in probes and set nnz to 0
+    clear_csr(weights.probes);
+    weights.probes.rows = weights.connections.rows;
+    weights.probes.cols = weights.connections.cols;
 }

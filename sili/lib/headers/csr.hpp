@@ -136,8 +136,136 @@ sparse_struct<
     return coo;
 }
 
+//warning: the original csr also has the same pointers after this operation.
+//warning2: the input coo MUST be coalesced: it must be sorted and have no duplicates.
+template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+sparse_struct<
+    SIZE_TYPE,
+    CSRPointers<index_type<INDEX_ARRAYS>>, 
+    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>>,
+    VALUE_ARRAYS
+> to_csr(
+    const sparse_struct<
+        SIZE_TYPE, 
+        COOPointers<index_type<INDEX_ARRAYS>>, 
+        std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS> + 1>, 
+        VALUE_ARRAYS> &a_coo, 
+    const int num_cpus)
+{
+    SIZE_TYPE nnz = a_coo.ptrs;
+    SIZE_TYPE num_rows = a_coo.rows;
+    auto rows = std::get<0>(a_coo.indices).get();
+
+    // Parallel section to determine min_row and max_row for each thread
+    SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
+    SIZE_TYPE *thread_max_row = new SIZE_TYPE[num_cpus + 1];
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        SIZE_TYPE tid = omp_get_thread_num();
+        SIZE_TYPE chunk_size = (nnz + num_cpus - 1) / num_cpus;
+        SIZE_TYPE start = tid * chunk_size;
+        SIZE_TYPE end = std::min(start + chunk_size, nnz);
+
+        thread_min_row[tid] = rows[start];
+        thread_max_row[tid] = rows[end - 1] + 1;
+    }
+
+    // Allocate accumulators for parallel histogram accumulation
+    SIZE_TYPE *accum = new SIZE_TYPE[a_coo.rows]();
+    if (num_cpus > 1) {
+        SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus * a_coo.rows];
+        std::fill(thr_accum, thr_accum + num_cpus * a_coo.rows, 0);
+
+        #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
+        {
+            int thread = omp_get_thread_num();
+            int my_first = thread * a_coo.rows;
+
+            SIZE_TYPE tid = omp_get_thread_num();
+            SIZE_TYPE chunk_size = (nnz + num_cpus - 1) / num_cpus;
+            SIZE_TYPE start = tid * chunk_size;
+            SIZE_TYPE end = std::min(start + chunk_size, nnz);
+
+            for (SIZE_TYPE i = start; i < end; i++) {
+                thr_accum[my_first + rows[i]]++;
+            }
+
+            #pragma omp for
+            for (SIZE_TYPE r = 0; r < a_coo.rows; r++) {
+                for (int t = 0; t < num_cpus; t++) {
+                    accum[r] += thr_accum[t * a_coo.rows + r];
+                }
+            }
+        }
+
+        delete[] thr_accum;
+    } else {
+        for (SIZE_TYPE i = 0; i < nnz; i++) {
+            accum[rows[i]]++;
+        }
+    }
+
+    SIZE_TYPE *ptrs = new SIZE_TYPE[num_rows + 1];
+    SIZE_TYPE scan_a = 0;
+
+    // Parallel scan to compute row pointers
+    #pragma omp parallel for simd reduction(inscan, + : scan_a)
+    for (SIZE_TYPE i = 0; i <= num_rows; i++) {
+        ptrs[i] = scan_a;
+        #pragma omp scan exclusive(scan_a)
+        {
+            scan_a += accum[i];
+        }
+    }
+
+    delete[] accum;
+
+    // Create and return the CSR sparse structure
+    sparse_struct<
+        SIZE_TYPE, 
+        CSRPointers<index_type<INDEX_ARRAYS>>, 
+        std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>>,
+        VALUE_ARRAYS> csr;
+
+    csr.rows = num_rows;
+    csr.cols = a_coo.cols;
+    csr.ptrs.reset(ptrs);
+    //std::get<0>(csr.indices).reset(std::get<1>(a_coo.indices).release());
+    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
+        std::get<idx>(csr.values).reset(std::get<idx+1>(a_coo.indices).release());
+    }
+    for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
+        std::get<valIdx>(csr.values).reset(std::get<valIdx+1>(a_coo.values).release());
+    }
+
+    return csr;
+}
+
+template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
+void clear_csr(sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& csr) {
+    // Clear pointers array
+    for (auto& ptr : csr.ptrs) {
+        ptr.reset();
+    }
+
+    // Clear indices array
+    for (auto& index : csr.indices) {
+        index.reset();
+    }
+
+    // Clear values array
+    for (auto& value : csr.values) {
+        value.reset();
+    }
+
+    // Set rows and columns to zero
+    csr.rows = 0;
+    csr.cols = 0;
+}
+
 // merges two CSRs
-template <typename SIZE_TYPE, typename VALUE_ARRAYS>
+/*template <typename SIZE_TYPE, typename VALUE_ARRAYS>
 sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> merge_csrs(
     const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &a_csr,
     const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &b_csr,
@@ -267,7 +395,7 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     return return_csr;
 
     // duplicated code end
-}
+}*/
 
 /*template<class SIZE_TYPE>
 inline int get_col(int ptr, int row_start_ptr, SIZE_TYPE* indices, int cols, int end){
