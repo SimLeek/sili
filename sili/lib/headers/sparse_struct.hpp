@@ -1,6 +1,7 @@
 #ifndef __SPARSE_STRUCT_HPP_
 #define __SPARSE_STRUCT_HPP_
 
+#include <cstddef>
 #include <memory>
 
 // Sub-template for pointers
@@ -41,6 +42,10 @@ struct sparse_struct {
     SIZE_TYPE rows;
     SIZE_TYPE cols;
     SIZE_TYPE _reserved_space = 0;
+
+    static constexpr std::size_t num_indices = std::tuple_size<INDICES>::value;
+    static constexpr std::size_t num_values = std::tuple_size<VALUES>::value;
+    static constexpr std::size_t num_pointers = std::tuple_size<PTRS>::value;
 
     // Default constructor
     sparse_struct()

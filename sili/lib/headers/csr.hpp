@@ -68,6 +68,74 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<s
     return csr;
 }*/
 
+template <typename INDEX_ARRAYS>
+using index_type = std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
+
+template <typename INDEX_ARRAYS>
+constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
+
+//warning: the original csr also has the same pointers after this operation.
+template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+sparse_struct<
+    SIZE_TYPE,
+    COOPointers<index_type<INDEX_ARRAYS>>, 
+    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
+    VALUE_ARRAYS
+    > to_coo(
+        const sparse_struct<SIZE_TYPE,CSRPointers<index_type<INDEX_ARRAYS>>, INDEX_ARRAYS, VALUE_ARRAYS> &a_csr, 
+        const int num_cpus)
+{
+    SIZE_TYPE nnz = a_csr.nnz();
+    index_type<INDEX_ARRAYS>* rows = new index_type<INDEX_ARRAYS>[nnz];
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        SIZE_TYPE tid = omp_get_thread_num(); // Thread ID
+
+        SIZE_TYPE chunk_size = (nnz + num_cpus - 1) / num_cpus; // Split insertions among threads
+        SIZE_TYPE start = tid * chunk_size;
+        SIZE_TYPE end = std::min(start + chunk_size, nnz); // Calculate the end index for this thread
+
+        SIZE_TYPE row = static_cast<SIZE_TYPE>(
+            std::max(
+                static_cast<std::ptrdiff_t>(0), 
+                std::upper_bound
+                (
+                    a_csr.ptrs.get(), 
+                    a_csr.ptrs.get() + a_csr.rows, start) - a_csr.ptrs.get()-1
+                )
+            );
+
+        SIZE_TYPE iter = start;
+        while (iter < end) {
+            if (iter >= a_csr.ptrs[row + 1]) {
+                row++;
+            }
+            rows[iter] = row;
+            iter++;
+        }
+    }
+
+    sparse_struct<
+    SIZE_TYPE,
+    COOPointers<index_type<INDEX_ARRAYS>>, 
+    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
+    VALUE_ARRAYS
+    > coo;
+    coo.rows = a_csr.rows;
+    coo.cols = a_csr.cols;
+    coo.ptrs = nnz;
+    std::get<0>(coo.indices).reset(rows);
+    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
+        std::get<idx+1>(coo.indices).reset(std::get<idx>(a_csr));
+    }
+    for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
+        std::get<valIdx>(coo.values).reset(std::get<valIdx>(a_csr));
+    }
+
+    return coo;
+}
+
 // merges two CSRs
 template <typename SIZE_TYPE, typename VALUE_ARRAYS>
 sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> merge_csrs(

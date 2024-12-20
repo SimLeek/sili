@@ -1,5 +1,6 @@
 #include "csr.hpp"
 #include "coo.hpp"
+#include <new>
 
 /**
  * Perform a forward pass of a sparse linear layer with sparse input
@@ -233,6 +234,7 @@ void optimize_weights_with_importance(
     const VALUE_TYPE beta = 0.1 // rate for importance updates
 ) {
 
+    //STEP 1: convert probes sparse_struct type to connection sparse_struct type
     VALUE_TYPE* importance_tensor = new VALUE_TYPE[weights.probes.nnz()];
     #pragma omp parallel num_threads(num_cpus)
     for (int weight_ptr = 0; weight_ptr < weights.probes.nnz(); weight_ptr++) {
@@ -244,44 +246,80 @@ void optimize_weights_with_importance(
         importance_tensor[weight_ptr] = weight_instant_importance;
     }
 
-    //1. move indices and values from probes to new CSR, non-copy
-    //2. update probes to have values[0]=0.0 values, values[1]=0.0 backprop, values[2]=importance
-    //3. combine with merge_csrs
-    //3a. copy algorithm from merge_csr and modify
-    //3b. update parallel_merge_sorted_coos to work with new COO structure
+    decltype(weights.connections) new_connections;
+    using index_type = std::tuple_element<0, decltype(new_connections.indices)>::type::value_type;
+    using value_type = std::tuple_element<0, decltype(new_connections.values)>::type::value_type;
+    for (std::size_t idx = 0; idx < weights.probes.num_indices; ++idx) {
+        std::get<idx>(new_connections.indices).reset(std::get<idx>(weights.probes.indices));
+    }
+    for (std::size_t valIdx = 0; valIdx < weights.probes.num_values-1; ++valIdx) {
+        std::get<valIdx>(new_connections.values).reset(new value_type[weights.probes.indices]{0}); // todo: if desired, set idx0: connection value
+    }
+    std::get<weights.probes.num_values-1>(new_connections.values).reset(importance_tensor);
 
-    // Convert CSR to COO format if required
-    auto coo_weights = weight_tensor.to_coo();
-    auto coo_updates = weight_gradients.to_coo();
+    // STEP 2: Convert CSR to COO format
+    auto coo_weights = to_coo(weights.connections, num_cpus);
+    auto coo_updates = to_coo(new_connections, num_cpus);
 
-    // Allocate arrays for merged weights
+    // STEP 3: Allocate arrays for merged weights
+    // note: certain architectures may prefer the slower nlogn method due to closer memory
+    // todo: pull this out into a "reserve COO for merging" function
     size_t merged_size = coo_weights.nnz() + coo_updates.nnz();
-    Index* merged_rows = new Index[merged_size];
-    Index* merged_cols = new Index[merged_size];
-    Value* merged_values = new Value[merged_size];
+    decltype(coo_weights) merged_coo;
+    using index_type = std::tuple_element<0, decltype(merged_coo.indices)>::type::value_type;
+    using value_type = std::tuple_element<0, decltype(merged_coo.values)>::type::value_type;
 
-    // Merge weights and updates
+    for (std::size_t idx = 0; idx < merged_coo.num_indices; ++idx) {
+        std::get<idx>(merged_coo.indices).reset(new index_type[merged_size]);
+    }
+    for (std::size_t valIdx = 0; valIdx < merged_coo.num_values; ++valIdx) {
+        std::get<valIdx>(merged_coo.values).reset(new value_type[merged_size]);
+    }
+
+    // STEP 4: Merge weights and updates
     /* todo: importance values need to be merged and affect merging:
      *   weight_importance = weight_importance * beta + gradient_importance * (1-beta)
      *   weights = weights - learning_rate * gradients / (weight_importance + epsilon)
      */
     //   so, if two same index weights show up, divide them by their importance
-    size_t new_nnz = parallel_merge_sorted_coos(
-        coo_weights.rows, coo_weights.cols, coo_weights.values*-learning_rate , coo_weights.importances * beta,
-        coo_updates.rows, coo_updates.cols, coo_updates.values, coo_gradients.importances * beta),
-        merged_rows, merged_cols, merged_values,
-        coo_weights.nnz(), coo_updates.nnz(), num_cpus);
+    size_t duplicates = parallel_merge_sorted_coos(
+        coo_weights.indices, coo_weights.values, 
+        coo_updates.indices, coo_updates.values ,
+        merged_coo.indices, merged_coo.values, 
+        coo_weights.nnz(), coo_updates.nnz(),
+        num_cpus);
+
+    size_t new_nnz = coo_weights.nnz() + coo_updates.nnz() - duplicates;
 
     // Check if pruning is required
     if (new_nnz > max_weights) {
-        coo_subtract_bottom_k(
-            merged_cols, merged_rows, merged_values.data(),
-            importance_tensor.values,
-            weight_tensor.cols, weight_tensor.rows, weight_tensor.values,
-            importance_tensor.values,
-            new_nnz, new_nnz - max_weights, num_cpus
-        );
-    }
+        if(max_weights>weights.connections.nnz()){
+            decltype(coo_weights) weight_out_container;
+            using index_type = std::tuple_element<0, decltype(weight_out_container.indices)>::type::value_type;
+            using value_type = std::tuple_element<0, decltype(weight_out_container.values)>::type::value_type;
 
-    weights.connections = merge_csrs(weights.connections, weights.probes);
+            for (std::size_t idx = 0; idx < weight_out_container.num_indices; ++idx) {
+                std::get<idx>(weight_out_container.indices).reset(new index_type[max_weights]);
+            }
+            for (std::size_t valIdx = 0; valIdx < weight_out_container.num_values; ++valIdx) {
+                std::get<valIdx>(weight_out_container.values).reset(new value_type[max_weights]);
+            }
+            coo_subtract_bottom_k(
+            merged_coo.indices, merged_coo.values, 
+            weight_out_container.indices, weight_out_container.values,
+            new_nnz, new_nnz - max_weights, num_cpus
+            );
+            weights.connections = to_csr(weight_out_container); // todo: write this function
+        }else{
+            coo_subtract_bottom_k(
+                merged_coo.indices, merged_coo.values, 
+                coo_weights.indices, coo_weights.values,
+                new_nnz, new_nnz - max_weights, num_cpus
+            );
+            weights.connections = to_csr(coo_weights);
+        }
+    }else{
+        weights.connections = to_csr(merged_coo);
+    }
+    weights.probes.clear();// todo: write this function. It should release/delete all arrays in probes and set nnz to 0
 }
