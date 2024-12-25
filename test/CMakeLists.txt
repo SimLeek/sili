@@ -42,13 +42,13 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
 
-    test_csr.cpp
+    test_coo.cpp
 
     #COMPLETED TESTS
-    #test_unique_vector.cpp
-    #test_coo.cpp
 
     #OLD TESTS
+    #test_unique_vector.cpp
+    #test_coo.cpp
     #test_cache_info.cpp
     #test_unique_vector.cpp
     #test_outer_product.cpp
@@ -65,6 +65,9 @@ set(Python3_LIBRARY "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3
 # currently, torch is broken in arch linux. Package is marked out of date. Should be fixed in a week or so.
 # pacman -S python-pytorch-opt-cuda
 # add: torch torch_cpu
+target_include_directories(sili_tests PRIVATE "../sili/" )
+target_include_directories(sili_tests PRIVATE "../sili/lib/headers" )
+target_include_directories(sili_tests PRIVATE "../sili/lib/src")
 target_link_libraries(sili_tests Catch2::Catch2WithMain OpenMP::OpenMP_CXX ${Python3_LIBRARY} )
 
 option(ENABLE_AVX "Enable AVX support" ON)

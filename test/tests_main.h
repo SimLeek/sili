@@ -6,7 +6,7 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_all.hpp>
 
-#include "unique_vector.hpp"
+#include "../sili/lib/headers/unique_vector.hpp"
 #include <vector>
 
 // thanks: https://github.com/catchorg/Catch2/issues/929#issuecomment-308663820
