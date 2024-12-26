@@ -628,6 +628,7 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
                                   INDEX_ARRAYS &n_indices, VALUE_ARRAYS &n_values,
                                   INDEX_ARRAYS &c_indices, VALUE_ARRAYS &c_values,
                                   std::size_t m_size, std::size_t n_size, int num_threads) {
+    //todo: make a csr variant of this.
     constexpr std::size_t numValues = std::tuple_size<VALUE_ARRAYS>::value;
     //using VALUE_TYPE = VALUE_ARRAYS::value_type;
     using VALUE_TYPE = std::remove_pointer_t<decltype(m_values[0].get())>;
@@ -916,10 +917,14 @@ int main() {
 *This function finds the bottom-k indices of an array in parallel.
 */
 template <typename VALUE_TYPE>
-std::vector<size_t> bottom_k_indices(VALUE_TYPE *values, size_t size, size_t k, int num_threads) {
+std::vector<size_t> bottom_k_indices(VALUE_TYPE *values, size_t size, size_t k, int num_threads) {    
     // Each thread processes a chunk of the array
     size_t chunk_size = (size + num_threads - 1) / num_threads;
     std::vector<std::vector<size_t>> thread_indices(num_threads);
+
+    if(k>size){
+        k=size;
+    }
 
     #pragma omp parallel num_threads(num_threads)
     {
@@ -977,20 +982,22 @@ template <typename INDEX_ARRAYS, typename VALUE_ARRAYS, int VALUE_INDEX = -1>
 void coo_subtract_bottom_k(INDEX_ARRAYS &indices, VALUE_ARRAYS &values,
                            INDEX_ARRAYS &c_indices, VALUE_ARRAYS &c_values,
                            size_t size, size_t k, int num_threads) {
+    //todo: make a csr variant of this.
+
     constexpr size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
     constexpr size_t numValues = std::tuple_size<VALUE_ARRAYS>::value;
-    using INDEX_TYPE = typename std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
-    using VALUE_TYPE = typename std::tuple_element<0, VALUE_ARRAYS>::type::value_type;
+    using INDEX_TYPE = std::remove_pointer_t<decltype(indices[0].get())>;
+    using VALUE_TYPE = std::remove_pointer_t<decltype(values[0].get())>;
 
     // Determine the array to base the bottom-k selection on
     constexpr int selectedIndex = (VALUE_INDEX == -1) ? (numValues - 1) : VALUE_INDEX;
     static_assert(selectedIndex >= 0 && selectedIndex < numValues, "Invalid VALUE_INDEX specified.");
 
     // Select the array for bottom-k computation
-    auto &selected_values = std::get<selectedIndex>(values);
+    auto &selected_values = values[selectedIndex];
 
     // Step 1: Find bottom-k indices in parallel
-    std::vector<size_t> bottom_k_indices = bottom_k_indices(selected_values.data(), size, k, num_threads);
+    std::vector<size_t> bottom_k_vec = bottom_k_indices(selected_values.get(), size, k, num_threads);
 
     // Step 2: Copy COO elements to the output array, skipping bottom-k
     #pragma omp parallel for num_threads(num_threads)
@@ -998,21 +1005,21 @@ void coo_subtract_bottom_k(INDEX_ARRAYS &indices, VALUE_ARRAYS &values,
         size_t start = thread_id * (size / num_threads);
         size_t end = (thread_id == num_threads - 1) ? size : (thread_id + 1) * (size / num_threads);
 
-        size_t bottom_k_index = std::lower_bound(bottom_k_indices.begin(), bottom_k_indices.end(), start) - bottom_k_indices.begin();
+        size_t bottom_k_index = std::lower_bound(bottom_k_vec.begin(), bottom_k_vec.end(), start) - bottom_k_vec.begin();
 
         size_t c_index = start - bottom_k_index;
         for (size_t i = start; i < end; ++i) {
-            if (bottom_k_index < bottom_k_indices.size() && bottom_k_indices[bottom_k_index] == i) {
+            if (bottom_k_index < bottom_k_vec.size() && bottom_k_vec[bottom_k_index] == i) {
                 ++bottom_k_index;  // Skip this index
             } else {
                 // Copy indices to output COO
                 for (size_t idx = 0; idx < numIndices; ++idx) {
-                    std::get<idx>(c_indices)[c_index] = std::get<idx>(indices)[i];
+                    c_indices[idx][c_index] = indices[idx][i];
                 }
 
                 // Copy values to output COO
                 for (size_t val = 0; val < numValues; ++val) {
-                    std::get<val>(c_values)[c_index] = std::get<val>(values)[i];
+                    c_values[val][c_index] = values[val][i];
                 }
 
                 ++c_index;

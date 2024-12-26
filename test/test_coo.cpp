@@ -443,3 +443,170 @@ TEST_CASE("Parallel Merge Sorted COOs - With Duplicates", "[parallel_merge_sorte
 }
 
 /* #endregion */
+
+/* #region bottom_k_indices */
+
+
+TEST_CASE("Bottom K Indices Test", "[bottom_k_indices]") {
+    SECTION("Basic test with k less than size") {
+        float values[] = {5, 3, 8, 4, 2, 7, 1, 6};
+        std::vector<size_t> result = bottom_k_indices(values, 8, 3, 4);
+        std::vector<size_t> expected = {6, 4, 1};  // indices of 1, 2, 3
+        
+        CHECK(result.size() == 3);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+
+    SECTION("k equals size") {
+        float values[] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+        std::vector<size_t> result = bottom_k_indices(values, 10, 10, 4);
+        std::vector<size_t> expected = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};  // indices of 0 to 9 in reverse order
+        
+        CHECK(result.size() == 10);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+
+    SECTION("k greater than size") {
+        float values[] = {10, 20, 30};
+        std::vector<size_t> result = bottom_k_indices(values, 3, 5, 4);  // k is larger than size
+        std::vector<size_t> expected = {0, 1, 2};  // should return all indices
+        
+        CHECK(result.size() == 3);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+
+    SECTION("k equals 1") {
+        float values[] = {50, 40, 30, 20, 10};
+        std::vector<size_t> result = bottom_k_indices(values, 5, 1, 4);
+        std::vector<size_t> expected = {4};  // index of 10
+        
+        CHECK(result.size() == 1);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+
+    SECTION("Empty array") {
+        float values[] = {};
+        std::vector<size_t> result = bottom_k_indices(values, 0, 5, 4);
+
+        CHECK(result.empty());
+    }
+
+    SECTION("Array with all same elements") {
+        float values[] = {2.5, 2.5, 2.5, 2.5, 2.5};
+        std::vector<size_t> result = bottom_k_indices(values, 5, 3, 4);
+        std::vector<size_t> expected = {0, 1, 2};  // Any 3 indices are valid here since all values are equal
+        
+        CHECK(result.size() == 3);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+
+    SECTION("Negative numbers") {
+        float values[] = {-5, -3, -8, -4, -2, -6, -1, -7};
+        std::vector<size_t> result = bottom_k_indices(values, 8, 3, 4);
+        std::vector<size_t> expected = {2, 7, 5};  // indices of -1, -2, -3
+        
+        CHECK(result.size() == 3);
+        CHECK_VECTOR_EQUAL(result, expected);
+    }
+}
+
+/* #endregion */
+
+/* #region coo_subtract_bottom_k */
+
+TEST_CASE("COO Subtract Bottom K - Basic Test", "[coo_subtract_bottom_k]") {
+    COOIndices<int> indices = {std::make_unique<int[]>(5), std::make_unique<int[]>(5)};
+    BiValues<float> values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    int row_data[] = {0, 1, 2, 3, 4};
+    int col_data[] = {0, 1, 2, 3, 4};
+    float val1_data[] = {5.0, 4.0, 3.0, 2.0, 1.0}; // Second value array for bottom-k selection
+    float val2_data[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+
+    std::copy(row_data, row_data + 5, indices[0].get());
+    std::copy(col_data, col_data + 5, indices[1].get());
+    std::copy(val1_data, val1_data + 5, values[0].get());
+    std::copy(val2_data, val2_data + 5, values[1].get());
+
+    COOIndices<int> c_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    BiValues<float> c_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    coo_subtract_bottom_k(indices, values, c_indices, c_values, 5, 2, 2);
+
+    int expected_rows[] = {2, 3, 4};
+    int expected_cols[] = {2, 3, 4};
+    float expected_vals1[] = {3.0, 2.0, 1.0};
+    float expected_vals2[] = {30.0, 40.0, 50.0};
+
+    CHECK_VECTOR_EQUAL(vec(c_indices[0].get(), 3), std::vector<int>(expected_rows, expected_rows + 3));
+    CHECK_VECTOR_EQUAL(vec(c_indices[1].get(), 3), std::vector<int>(expected_cols, expected_cols + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[0].get(), 3), std::vector<float>(expected_vals1, expected_vals1 + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[1].get(), 3), std::vector<float>(expected_vals2, expected_vals2 + 3));
+}
+
+TEST_CASE("COO Subtract Bottom K - Using First Value Array", "[coo_subtract_bottom_k]") {
+    COOIndices<int> indices = {std::make_unique<int[]>(5), std::make_unique<int[]>(5)};
+    BiValues<float> values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    int row_data[] = {0, 1, 2, 3, 4};
+    int col_data[] = {0, 1, 2, 3, 4};
+    float val1_data[] = {1.0, 2.0, 3.0, 4.0, 5.0}; // First value array for bottom-k selection
+    float val2_data[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+
+    std::copy(row_data, row_data + 5, indices[0].get());
+    std::copy(col_data, col_data + 5, indices[1].get());
+    std::copy(val1_data, val1_data + 5, values[0].get());
+    std::copy(val2_data, val2_data + 5, values[1].get());
+
+    COOIndices<int> c_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    BiValues<float> c_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    // Here we specify to use the first (index 0) value array for bottom-k selection
+    coo_subtract_bottom_k<decltype(indices), decltype(values), 0>(indices, values, c_indices, c_values, 5, 2, 2);
+
+    int expected_rows[] = {2, 3, 4};
+    int expected_cols[] = {2, 3, 4};
+    float expected_vals1[] = {3.0, 4.0, 5.0};
+    float expected_vals2[] = {30.0, 40.0, 50.0};
+
+    CHECK_VECTOR_EQUAL(vec(c_indices[0].get(), 3), std::vector<int>(expected_rows, expected_rows + 3));
+    CHECK_VECTOR_EQUAL(vec(c_indices[1].get(), 3), std::vector<int>(expected_cols, expected_cols + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[0].get(), 3), std::vector<float>(expected_vals1, expected_vals1 + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[1].get(), 3), std::vector<float>(expected_vals2, expected_vals2 + 3));
+}
+
+TEST_CASE("COO Subtract Bottom K - TriValues", "[coo_subtract_bottom_k]") {
+    COOIndices<int> indices = {std::make_unique<int[]>(5), std::make_unique<int[]>(5)};
+    TriValues<float> values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    int row_data[] = {0, 1, 2, 3, 4};
+    int col_data[] = {0, 1, 2, 3, 4};
+    float val1_data[] = {5.0, 4.0, 3.0, 2.0, 1.0}; // Using last (index 2) value array for bottom-k
+    float val2_data[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+    float val3_data[] = {100.0, 200.0, 300.0, 400.0, 500.0};
+
+    std::copy(row_data, row_data + 5, indices[0].get());
+    std::copy(col_data, col_data + 5, indices[1].get());
+    std::copy(val1_data, val1_data + 5, values[0].get());
+    std::copy(val2_data, val2_data + 5, values[1].get());
+    std::copy(val3_data, val3_data + 5, values[2].get());
+
+    COOIndices<int> c_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    TriValues<float> c_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    coo_subtract_bottom_k(indices, values, c_indices, c_values, 5, 2, 2);
+
+    int expected_rows[] = {2, 3, 4};
+    int expected_cols[] = {2, 3, 4};
+    float expected_vals1[] = {3.0, 2.0, 1.0};
+    float expected_vals2[] = {30.0, 40.0, 50.0};
+    float expected_vals3[] = {300.0, 400.0, 500.0};
+
+    CHECK_VECTOR_EQUAL(vec(c_indices[0].get(), 3), std::vector<int>(expected_rows, expected_rows + 3));
+    CHECK_VECTOR_EQUAL(vec(c_indices[1].get(), 3), std::vector<int>(expected_cols, expected_cols + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[0].get(), 3), std::vector<float>(expected_vals1, expected_vals1 + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[1].get(), 3), std::vector<float>(expected_vals2, expected_vals2 + 3));
+    CHECK_VECTOR_EQUAL(vec(c_values[2].get(), 3), std::vector<float>(expected_vals3, expected_vals3 + 3));
+}
+
+/* #endregion */
