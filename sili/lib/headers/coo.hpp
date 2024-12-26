@@ -69,6 +69,7 @@ Stars, because they're sparse like COOs:
 *
 * @return Number of duplicates removed during merging.
 */
+#include "scan.hpp"
 #include "sparse_struct.hpp"
 #include <algorithm>
 #include <array>
@@ -542,7 +543,7 @@ void merge_sort_coo_external(SIZE_TYPE *cols, SIZE_TYPE *rows, VALUE_TYPE *vals,
  */
 template <typename INDEX_ARRAYS>
 std::size_t binary_search_coo(const INDEX_ARRAYS &indices,
-                              const std::array<typename std::tuple_element<0, INDEX_ARRAYS>::type::value_type, std::tuple_size<INDEX_ARRAYS>::value> &target_indices,  // should this be size_t, size instead?
+                              const std::array<std::remove_pointer_t<decltype(indices[0].get())>, std::tuple_size<INDEX_ARRAYS>::value> &target_indices,  // should this be size_t, size instead?
                               std::size_t low, std::size_t high) {
     constexpr std::size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
 
@@ -568,6 +569,38 @@ std::size_t binary_search_coo(const INDEX_ARRAYS &indices,
     }
 
     return low;
+}
+
+template <typename INDEX_ARRAYS>
+std::size_t binary_search_upper_bound_coo(
+    const INDEX_ARRAYS &indices,
+    const std::array<std::remove_pointer_t<decltype(indices[0].get())>, std::tuple_size<INDEX_ARRAYS>::value> &target_indices,
+    std::size_t low, std::size_t high) {
+    constexpr std::size_t numIndices = std::tuple_size<INDEX_ARRAYS>::value;
+
+    while (low < high) {
+        std::size_t mid = (low + high) / 2;
+        bool is_less_or_equal = true;
+
+        for (std::size_t idx = 0; idx < numIndices; ++idx) {
+            auto current = indices[idx][mid];
+            auto target = target_indices[idx];
+            if (current < target) {
+                is_less_or_equal = true;
+                break;
+            } else if (current > target) {
+                is_less_or_equal = false;
+                break;
+            }
+        }
+
+        if (is_less_or_equal)
+            low = mid + 1; // Proceed to the right
+        else
+            high = mid;     // Move to the left
+    }
+
+    return low; // Returns the first index where element > target
 }
 
 /**
@@ -602,10 +635,13 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
     //using INDEX_TYPE = VALUE_ARRAYS::value_type;
     using INDEX_TYPE = std::remove_pointer_t<decltype(m_indices[0].get())>;
 
-    std::size_t duplicates = 0;
+    std::vector<std::size_t> duplicates_per_thread(num_threads, 0);
+
+    std::vector<std::size_t> n_begins(num_threads, 0);
+    std::vector<std::size_t> n_ends(num_threads, 0);
 
     // Step 1: Determine chunk ranges for m and corresponding n ranges
-    #pragma omp parallel num_threads(num_threads) reduction(+:duplicates)
+    #pragma omp parallel num_threads(num_threads) shared(n_begins, n_ends, duplicates_per_thread)
     {
         int thread_id = omp_get_thread_num();
         size_t chunk_size = (m_size + num_threads - 1) / num_threads; // Ceiling division
@@ -613,6 +649,7 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
         size_t m_begin = thread_id * chunk_size;
         size_t m_end = std::min(m_begin + chunk_size, m_size);
 
+        if(m_begin<m_end){
         std::array<INDEX_TYPE, numIndices> m_begin_indices;
         std::array<INDEX_TYPE, numIndices> m_end_indices;
 
@@ -621,14 +658,14 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
             m_end_indices[idx] = m_indices[idx][m_end - 1];
         }
 
-        std::size_t n_begin = binary_search_coo(n_indices, m_begin_indices, 0, n_size);
-        std::size_t n_end = binary_search_coo(n_indices, m_end_indices, 0, n_size);
-        
-        size_t c_start = m_begin + n_begin;
+        n_begins[thread_id] = binary_search_coo(n_indices, m_begin_indices, 0, n_size);
+        n_ends[thread_id] = binary_search_upper_bound_coo(n_indices, m_end_indices, 0, n_size);
+
+        size_t c_start = m_begin + n_begins[thread_id];
 
         // Merge subarrays into c
-        size_t i = m_begin, j = n_begin, k = c_start;
-        while (i < m_end && j < n_end) {
+        size_t i = m_begin, j = n_begins[thread_id], k = c_start;
+        while (i < m_end && j < n_ends[thread_id]) {
             bool m_lt_n = false, m_eq_n = true;
 
             for (std::size_t idx = 0; idx < numIndices; ++idx) {
@@ -645,33 +682,37 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
             }
 
             if (m_lt_n || m_eq_n) { // todo: split out m_eq_n and have it do i++ and j++ and sum std::get<valIdx>(m_values)[i] + std::get<valIdx>(m_values)[j] for a slight speed boost
+                bool is_duplicate = false;
                 if (k > 0) {
-                    bool is_duplicate = true;
+                    is_duplicate = true;
                     for (std::size_t idx = 0; idx < numIndices; ++idx) {
                         if (c_indices[idx][k - 1] != m_indices[idx][i]) {
                             is_duplicate = false;
                             break;
                         }
                     }
+                    
                     if (is_duplicate) {
                         for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
                             c_values[valIdx][k - 1] += m_values[valIdx][i];
                         }
-                        duplicates++;
-                    } else {
-                        for (std::size_t idx = 0; idx < numIndices; ++idx) {
-                            c_indices[idx][k] = m_indices[idx][i];
-                        }
-                        for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
-                            c_values[valIdx][k] = m_values[valIdx][i];
-                        }
-                        k++;
+                        duplicates_per_thread[thread_id]++;
                     }
+                }
+                if(!is_duplicate){
+                    for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                        c_indices[idx][k] = m_indices[idx][i];
+                    }
+                    for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                        c_values[valIdx][k] = m_values[valIdx][i];
+                    }
+                    k++;
                 }
                 i++;
             } else {
+                bool is_duplicate = false;
                 if (k > 0) {
-                    bool is_duplicate = true;
+                    is_duplicate = true;
                     for (std::size_t idx = 0; idx < numIndices; ++idx) {
                         if (c_indices[idx][k - 1] != n_indices[idx][j]) {
                             is_duplicate = false;
@@ -682,8 +723,9 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
                         for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
                             c_values[valIdx][k - 1] += n_values[valIdx][j];
                         }
-                        duplicates++;
-                    } else {
+                        duplicates_per_thread[thread_id]++;
+                    }
+                } if(!is_duplicate) {
                         for (std::size_t idx = 0; idx < numIndices; ++idx) {
                             c_indices[idx][k] = n_indices[idx][j];
                         }
@@ -692,13 +734,13 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
                         }
                         k++;
                     }
+                    j++;
                 }
-                j++;
             }
-        }
         while (i < m_end) {
+            bool is_duplicate = false;
             if (k > 0) {
-                bool is_duplicate = true;
+                is_duplicate = true;
                 for (std::size_t idx = 0; idx < numIndices; ++idx) {
                     if (c_indices[idx][k - 1] != m_indices[idx][i]) {
                         is_duplicate = false;
@@ -709,22 +751,24 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
                     for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
                         c_values[valIdx][k - 1] += m_values[valIdx][i];
                     }
-                    duplicates++;
-                } else {
-                    for (std::size_t idx = 0; idx < numIndices; ++idx) {
-                        c_indices[idx][k] = m_indices[idx][i];
-                    }
-                    for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
-                        c_values[valIdx][k] = m_values[valIdx][i];
-                    }
-                    k++;
+                    duplicates_per_thread[thread_id]++;
                 }
+            }
+            if(!is_duplicate){
+                for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                    c_indices[idx][k] = m_indices[idx][i];
+                }
+                for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                    c_values[valIdx][k] = m_values[valIdx][i];
+                }
+                k++;
             }
             i++;
         }
-        while (j < n_end) {
+        while (j < n_ends[thread_id]) {
+            bool is_duplicate = false;
             if (k > 0) {
-                bool is_duplicate = true;
+                is_duplicate = true;
                 for (std::size_t idx = 0; idx < numIndices; ++idx) {
                     if (c_indices[idx][k - 1] != n_indices[idx][j]) {
                         is_duplicate = false;
@@ -735,22 +779,92 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
                     for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
                         c_values[valIdx][k - 1] += n_values[valIdx][j];
                     }
-                    duplicates++;
-                } else {
-                    for (std::size_t idx = 0; idx < numIndices; ++idx) {
-                        c_indices[idx][k] = n_indices[idx][j];
-                    }
-                    for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
-                        c_values[valIdx][k] = n_values[valIdx][j];
-                    }
-                    k++;
+                    duplicates_per_thread[thread_id]++;
                 }
+            } 
+            if(!is_duplicate) {
+                for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                    c_indices[idx][k] = n_indices[idx][j];
+                }
+                for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                    c_values[valIdx][k] = n_values[valIdx][j];
+                }
+                k++;
             }
             j++;
         }
+        }
     }
 
-    return duplicates;
+    // step 1.5: scan the duplicates
+    std::vector<std::size_t> scanned_duplicates(num_threads, 0);
+    fullScanValues(duplicates_per_thread, scanned_duplicates);
+
+    // step 1.6: shift the chunks
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int thread_id = omp_get_thread_num();
+        size_t chunk_size = (m_size + num_threads - 1) / num_threads;
+        size_t m_begin = thread_id * chunk_size;
+        size_t m_end = std::min(m_begin + chunk_size, m_size);
+        if(m_begin<m_end){
+            size_t c_end = n_ends[thread_id] + m_end;
+            size_t c_begin = n_begins[thread_id] + m_begin;
+
+            size_t shift = scanned_duplicates[thread_id];
+
+            for (size_t i = c_begin; i < c_end; ++i) {
+                size_t new_position = i - shift;
+                for (std::size_t idx = 0; idx < numIndices; ++idx) {
+                    c_indices[idx][new_position] = c_indices[idx][i];
+                }
+                for (std::size_t valIdx = 0; valIdx < numValues; ++valIdx) {
+                    c_values[valIdx][new_position] = c_values[valIdx][i];
+                }
+            }
+        }
+    }
+
+    // Step 2: Copy remaining elements from n to c
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int thread_id = omp_get_thread_num();
+        size_t chunk_size = (n_begins[0] + num_threads - 1) / num_threads;
+        size_t start = thread_id * chunk_size;
+        size_t end = std::min(start + chunk_size, n_begins[0]);
+
+        for (size_t idx = start; idx < end; ++idx) {
+            for (std::size_t j = 0; j < numIndices; ++j) {
+                c_indices[j][idx] = n_indices[j][idx];
+            }
+            for (std::size_t j = 0; j < numValues; ++j) {
+                c_values[j][idx] = n_values[j][idx];
+            }
+        }
+
+        size_t final_end = n_ends[std::min((size_t)num_threads-1, std::min(n_size-1, m_size-1))];
+
+        chunk_size = (n_size - final_end + num_threads - 1) / num_threads;
+        size_t c_start = m_size - scanned_duplicates[num_threads] + final_end + thread_id * chunk_size;
+        size_t c_end = std::min(c_start + chunk_size, m_size + n_size - scanned_duplicates[num_threads]);
+        size_t n_start = final_end + thread_id * chunk_size;
+        size_t n_end = std::min(n_start + chunk_size,  n_size);
+
+        if(n_end > n_start){  // this prevents segfaults from unsigned types
+            for (size_t idx = 0; idx < n_end-n_start; ++idx) {
+                size_t n_idx = idx + n_start;
+                size_t c_idx = idx + c_start;
+                for (std::size_t j = 0; j < numIndices; ++j) {
+                    c_indices[j][c_idx] = n_indices[j][n_idx];
+                }
+                for (std::size_t j = 0; j < numValues; ++j) {
+                    c_values[j][c_idx] = n_values[j][n_idx];
+                }
+            }
+        }
+    }
+
+    return scanned_duplicates[num_threads];
 }
 
 /*

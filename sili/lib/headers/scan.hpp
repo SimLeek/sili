@@ -62,14 +62,14 @@ void fullScanSizes2(const sili::unique_vector<sili::unique_vector<sili::unique_v
  * @param vec_of_vec A vector of vectors of type T.
  * @return A vector of size_t with cumulative sizes, one element larger than the input.
  */
-template <class T> void fullScanValues(const sili::unique_vector<T> &vec, sili::unique_vector<T>&fullScan, T&& scan_a=0) {
+template <class CONTAINER> void fullScanValues(const CONTAINER &vec, CONTAINER& fullScan, typename CONTAINER::value_type&& scan_a = typename CONTAINER::value_type{}) {
 
 #ifdef __clang__ // OMP scan is broken in clang and may crash it: https://github.com/llvm/llvm-project/issues/87466
     std::inclusive_scan(
         vec.begin(),
         vec.end(),
         fullScan.begin() + 1,
-        std::plus<T>()
+        std::plus<typename CONTAINER::value_type>()
     );
 #else
 

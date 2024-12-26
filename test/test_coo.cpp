@@ -237,7 +237,7 @@ TEST_CASE("Insertion Sort COO - Case with BiValues", "[insertion_sort_coo]") {
 }
 /* #endregion */
 
-
+/* #region merge_sort_coo */
 TEST_CASE("Merge Sort COO - Simple Case", "[merge_sort_coo]") {
     COOIndices<int> indices = {std::make_unique<int[]>(4), std::make_unique<int[]>(4)};
     BiValues<float> values = {std::make_unique<float[]>(4), std::make_unique<float[]>(4)};
@@ -293,3 +293,153 @@ TEST_CASE("Merge Sort COO - Complex Case with Duplicates", "[merge_sort_coo]") {
     CHECK_VECTOR_EQUAL(vec(values[0].get(), 6), std::vector<float>(expected_vals1, expected_vals1 + 6));
     CHECK_VECTOR_EQUAL(vec(values[1].get(), 6), std::vector<float>(expected_vals2, expected_vals2 + 6));
 }
+
+/* #endregion */
+
+/* #region binary_search_coo */
+TEST_CASE("Binary Search COO - Simple Case", "[binary_search_coo]") {
+    COOIndices<int> indices = {std::make_unique<int[]>(5), std::make_unique<int[]>(5)};
+    
+    int row_data[] = {1, 2, 2, 3, 4};
+    int col_data[] = {1, 2, 3, 4, 5};
+
+    std::copy(row_data, row_data + 5, indices[0].get());
+    std::copy(col_data, col_data + 5, indices[1].get());
+
+    SECTION("Search for an existing entry") {
+        std::array<int, 2> target = {2, 2};
+        std::size_t pos = binary_search_coo(indices, target, 0, 5);
+        CHECK(pos == 1);  // The target {2, 2} is at position 1
+    }
+
+    SECTION("Search for a new entry") {
+        std::array<int, 2> target = {3, 3};
+        std::size_t pos = binary_search_coo(indices, target, 0, 5);
+        CHECK(pos == 3);  // The target {3, 3} would be inserted at position 3
+    }
+}
+
+TEST_CASE("Binary Search COO - Edge Cases", "[binary_search_coo]") {
+    COOIndices<int> indices = {std::make_unique<int[]>(6), std::make_unique<int[]>(6)};
+
+    int row_data[] = {1, 1, 1, 2, 3, 4};
+    int col_data[] = {1, 2, 3, 1, 2, 3};
+
+    std::copy(row_data, row_data + 6, indices[0].get());
+    std::copy(col_data, col_data + 6, indices[1].get());
+
+    SECTION("Search for the smallest entry") {
+        std::array<int, 2> target = {1, 1};
+        std::size_t pos = binary_search_coo(indices, target, 0, 6);
+        CHECK(pos == 0);  // The target {1, 1} is at position 0
+    }
+
+    SECTION("Search for the largest entry") {
+        std::array<int, 2> target = {5, 5};
+        std::size_t pos = binary_search_coo(indices, target, 0, 6);
+        CHECK(pos == 6);  // The target {5, 5} would be inserted at position 6
+    }
+
+    SECTION("Search for a mid-range non-existent entry") {
+        std::array<int, 2> target = {2, 3};
+        std::size_t pos = binary_search_coo(indices, target, 0, 6);
+        CHECK(pos == 4);  // The target {2, 3} would be inserted at position 4
+    }
+}
+
+/* #endregion */
+
+/* #region parallel_merge_sorted_coos */
+
+TEST_CASE("Parallel Merge Sorted COOs - Basic Merge", "[parallel_merge_sorted_coos]") {
+    COOIndices<int> m_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    BiValues<float> m_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    int m_row_data[] = {1, 2, 3};
+    int m_col_data[] = {1, 2, 3};
+    float m_val1_data[] = {1.0, 2.0, 3.0};
+    float m_val2_data[] = {10.0, 20.0, 30.0};
+
+    COOIndices<int> n_indices = {std::make_unique<int[]>(2), std::make_unique<int[]>(2)};
+    BiValues<float> n_values = {std::make_unique<float[]>(2), std::make_unique<float[]>(2)};
+
+    int n_row_data[] = {4, 5};
+    int n_col_data[] = {4, 5};
+    float n_val1_data[] = {4.0, 5.0};
+    float n_val2_data[] = {40.0, 50.0};
+
+    COOIndices<int> c_indices = {std::make_unique<int[]>(5), std::make_unique<int[]>(5)};
+    BiValues<float> c_values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    std::copy(m_row_data, m_row_data + 3, m_indices[0].get());
+    std::copy(m_col_data, m_col_data + 3, m_indices[1].get());
+    std::copy(m_val1_data, m_val1_data + 3, m_values[0].get());
+    std::copy(m_val2_data, m_val2_data + 3, m_values[1].get());
+
+    std::copy(n_row_data, n_row_data + 2, n_indices[0].get());
+    std::copy(n_col_data, n_col_data + 2, n_indices[1].get());
+    std::copy(n_val1_data, n_val1_data + 2, n_values[0].get());
+    std::copy(n_val2_data, n_val2_data + 2, n_values[1].get());
+
+    std::size_t duplicates = parallel_merge_sorted_coos(
+        m_indices, m_values, n_indices, n_values, c_indices, c_values, 3, 2, 4);
+
+    int expected_rows[] = {1, 2, 3, 4, 5};
+    int expected_cols[] = {1, 2, 3, 4, 5};
+    float expected_vals1[] = {1.0, 2.0, 3.0, 4.0, 5.0};
+    float expected_vals2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+
+    CHECK(duplicates == 0);  // No duplicates expected
+    CHECK_VECTOR_EQUAL(vec(c_indices[0].get(), 5), std::vector<int>(expected_rows, expected_rows + 5));
+    CHECK_VECTOR_EQUAL(vec(c_indices[1].get(), 5), std::vector<int>(expected_cols, expected_cols + 5));
+    CHECK_VECTOR_EQUAL(vec(c_values[0].get(), 5), std::vector<float>(expected_vals1, expected_vals1 + 5));
+    CHECK_VECTOR_EQUAL(vec(c_values[1].get(), 5), std::vector<float>(expected_vals2, expected_vals2 + 5));
+}
+
+
+TEST_CASE("Parallel Merge Sorted COOs - With Duplicates", "[parallel_merge_sorted_coos]") {
+    COOIndices<int> m_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    BiValues<float> m_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    int m_row_data[] = {1, 2, 3};
+    int m_col_data[] = {1, 2, 3};
+    float m_val1_data[] = {1.0, 2.0, 3.0};
+    float m_val2_data[] = {10.0, 20.0, 30.0};
+
+    COOIndices<int> n_indices = {std::make_unique<int[]>(3), std::make_unique<int[]>(3)};
+    BiValues<float> n_values = {std::make_unique<float[]>(3), std::make_unique<float[]>(3)};
+
+    int n_row_data[] = {2, 3, 4};
+    int n_col_data[] = {2, 3, 4};
+    float n_val1_data[] = {2.0, 3.0, 4.0};
+    float n_val2_data[] = {20.0, 30.0, 40.0};
+
+    COOIndices<int> c_indices = {std::make_unique<int[]>(6), std::make_unique<int[]>(6)};
+    BiValues<float> c_values = {std::make_unique<float[]>(6), std::make_unique<float[]>(6)};
+
+    std::copy(m_row_data, m_row_data + 3, m_indices[0].get());
+    std::copy(m_col_data, m_col_data + 3, m_indices[1].get());
+    std::copy(m_val1_data, m_val1_data + 3, m_values[0].get());
+    std::copy(m_val2_data, m_val2_data + 3, m_values[1].get());
+
+    std::copy(n_row_data, n_row_data + 3, n_indices[0].get());
+    std::copy(n_col_data, n_col_data + 3, n_indices[1].get());
+    std::copy(n_val1_data, n_val1_data + 3, n_values[0].get());
+    std::copy(n_val2_data, n_val2_data + 3, n_values[1].get());
+
+    std::size_t duplicates = parallel_merge_sorted_coos(
+        m_indices, m_values, n_indices, n_values, c_indices, c_values, 3, 3, 4);
+
+    int expected_rows[] = {1, 2, 3, 4};
+    int expected_cols[] = {1, 2, 3, 4};
+    float expected_vals1[] = {1.0, 4.0, 6.0, 4.0};
+    float expected_vals2[] = {10.0, 40.0, 60.0, 40.0};
+
+    CHECK(duplicates == 2);  // Two duplicates expected
+    CHECK_VECTOR_EQUAL(vec(c_indices[0].get(), 4), std::vector<int>(expected_rows, expected_rows + 4));
+    CHECK_VECTOR_EQUAL(vec(c_indices[1].get(), 4), std::vector<int>(expected_cols, expected_cols + 4));
+    CHECK_VECTOR_EQUAL(vec(c_values[0].get(), 4), std::vector<float>(expected_vals1, expected_vals1 + 4));
+    CHECK_VECTOR_EQUAL(vec(c_values[1].get(), 4), std::vector<float>(expected_vals2, expected_vals2 + 4));
+}
+
+/* #endregion */
