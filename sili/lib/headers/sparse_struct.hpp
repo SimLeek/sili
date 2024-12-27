@@ -4,6 +4,17 @@
 #include <cstddef>
 #include <memory>
 
+//template checks
+template <typename T>
+struct is_std_array : std::false_type {};
+
+template <typename T, std::size_t N>
+struct is_std_array<std::array<T, N>> : std::true_type {};
+
+template <typename T>
+constexpr bool is_std_array_v = is_std_array<T>::value;
+
+
 // Sub-template for pointers
 template <class SIZE_TYPE>
 using CSRPointers = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
@@ -62,40 +73,15 @@ struct sparse_struct {
 
     // Get the number of non-zeros
     SIZE_TYPE nnz() const {
-        if constexpr (std::is_array_v<decltype(ptrs)>) { // Check if ptrs is an array type
+        if constexpr (std::is_array_v<decltype(ptrs)> || is_std_array_v<decltype(ptrs)>) { // Check if ptrs is an array type
             return (ptrs[ptrs.size()-1] != nullptr) ? ptrs[ptrs.size()-1][rows] : 0;
         } else { // ptrs is a single nnz value
             return ptrs;
         }
     }
 
-    // Access specific pointer, index, or value arrays
-    SIZE_TYPE* get_ptr(std::size_t index) {
-        return ptrs.ptrs[index].get();
-    }
-    const SIZE_TYPE* get_ptr(std::size_t index) const {
-        return ptrs.ptrs[index].get();
-    }
-
-    SIZE_TYPE* get_index(std::size_t index) {
-        return indices.indices[index].get();
-    }
-    const SIZE_TYPE* get_index(std::size_t index) const {
-        return indices.indices[index].get();
-    }
-
-    template <std::size_t INDEX>
-    auto get_value() -> decltype(values.values[INDEX].get()) {
-        return values.values[INDEX].get();
-    }
-
-    template <std::size_t INDEX>
-    auto get_value() const -> decltype(values.values[INDEX].get()) {
-        return values.values[INDEX].get();
-    }
-
     // Reserve space for indices and values
-    void reserve(SIZE_TYPE new_reserved) {
+    /*void reserve(SIZE_TYPE new_reserved) {
         if (new_reserved > _reserved_space) {
             _reserved_space = new_reserved;
 
@@ -117,7 +103,7 @@ struct sparse_struct {
                 values.values[i] = std::move(new_values);
             }
         }
-    }
+    }*/
 };
 
 // tri = weight multiplier, backprop, importance (for optim). Adagrad would use 2 for optim, using quad.

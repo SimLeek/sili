@@ -42,9 +42,10 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
 
-    test_coo.cpp
+    test_csr.cpp
 
     #COMPLETED TESTS
+    #test_coo.cpp
 
     #OLD TESTS
     #test_unique_vector.cpp

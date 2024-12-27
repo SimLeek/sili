@@ -4,6 +4,219 @@
 #include <cstddef>
 #include <vector>
 
+/* #region clear_csr */
+
+TEST_CASE("CSR Clear - UnaryValues", "[clear_csr]") {
+    using SIZE_TYPE = int;
+    sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<float>> csr;
+
+    // Initialize CSR with one value array
+    csr.ptrs = {std::make_unique<SIZE_TYPE[]>(5)};
+    csr.indices = {std::make_unique<SIZE_TYPE[]>(4)};
+    csr.values = {std::make_unique<float[]>(4)};
+    csr.rows = 4;
+    csr.cols = 5;
+
+    // Fill data
+    int ptr_data[] = {0, 1, 2, 3, 4};
+    int index_data[] = {0, 1, 2, 3};
+    float value_data[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::copy(ptr_data, ptr_data + 5, csr.ptrs[0].get());
+    std::copy(index_data, index_data + 4, csr.indices[0].get());
+    std::copy(value_data, value_data + 4, csr.values[0].get());
+
+    // Clear CSR
+    clear_csr(csr);
+
+    // Check results
+    CHECK(csr.rows == 0);
+    CHECK(csr.cols == 0);
+    for (const auto& ptr : csr.ptrs) {
+        CHECK(ptr == nullptr);
+    }
+    for (const auto& index : csr.indices) {
+        CHECK(index == nullptr);
+    }
+    for (const auto& value : csr.values) {
+        CHECK(value == nullptr);
+    }
+}
+
+TEST_CASE("CSR Clear - TriValues", "[clear_csr]") {
+    using SIZE_TYPE = int;
+    sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, TriValues<float>> csr;
+
+    // Initialize CSR with three value arrays
+    csr.ptrs = {std::make_unique<SIZE_TYPE[]>(6)};
+    csr.indices = {std::make_unique<SIZE_TYPE[]>(5)};
+    csr.values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+    csr.rows = 5;
+    csr.cols = 6;
+
+    // Fill data
+    int ptr_data[] = {0, 2, 4, 6, 8, 10};
+    int index_data[] = {0, 1, 2, 3, 4};
+    float value1_data[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    float value2_data[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
+    float value3_data[] = {100.0f, 200.0f, 300.0f, 400.0f, 500.0f};
+    std::copy(ptr_data, ptr_data + 6, csr.ptrs[0].get());
+    std::copy(index_data, index_data + 5, csr.indices[0].get());
+    std::copy(value1_data, value1_data + 5, csr.values[0].get());
+    std::copy(value2_data, value2_data + 5, csr.values[1].get());
+    std::copy(value3_data, value3_data + 5, csr.values[2].get());
+
+    // Clear CSR
+    clear_csr(csr);
+
+    // Check results
+    CHECK(csr.rows == 0);
+    CHECK(csr.cols == 0);
+    for (const auto& ptr : csr.ptrs) {
+        CHECK(ptr == nullptr);
+    }
+    for (const auto& index : csr.indices) {
+        CHECK(index == nullptr);
+    }
+    for (const auto& value : csr.values) {
+        CHECK(value == nullptr);
+    }
+}
+
+/* #endregion */
+
+/* #region to_coo */
+
+TEST_CASE("CSR to COO - UnaryValues", "[to_coo]") {
+    using SIZE_TYPE = int;
+    sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<float>> csr;
+
+    // Initialize CSR structure
+    csr.rows = 3;
+    csr.cols = 3;
+    csr.ptrs = {std::make_unique<SIZE_TYPE[]>(4)};
+    csr.indices = {std::make_unique<SIZE_TYPE[]>(4)};
+    csr.values = {std::make_unique<float[]>(4)};
+
+    // Fill CSR data
+    int ptr_data[] = {0, 2, 3, 4};
+    int index_data[] = {0, 2, 1, 2};
+    float value_data[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::copy(ptr_data, ptr_data + 4, csr.ptrs[0].get());
+    std::copy(index_data, index_data + 4, csr.indices[0].get());
+    std::copy(value_data, value_data + 4, csr.values[0].get());
+
+    // Convert CSR to COO
+    auto coo = to_coo(csr, 2);
+
+    // Check COO data
+    CHECK(coo.rows == csr.rows);
+    CHECK(coo.cols == csr.cols);
+    CHECK(coo.ptrs == 4); // nnz
+
+    // Expected COO data
+    int expected_rows[] = {0, 0, 1, 2};
+    int expected_cols[] = {0, 2, 1, 2};
+    float expected_values[] = {1.0f, 2.0f, 3.0f, 4.0f};
+
+    CHECK_VECTOR_EQUAL(vec(coo.indices[0].get(), 4), std::vector<int>(expected_rows, expected_rows + 4));
+    CHECK_VECTOR_EQUAL(vec(coo.indices[1].get(), 4), std::vector<int>(expected_cols, expected_cols + 4));
+    CHECK_VECTOR_EQUAL(vec(coo.values[0].get(), 4), std::vector<float>(expected_values, expected_values + 4));
+}
+
+TEST_CASE("CSR to COO - BiValues", "[to_coo]") {
+    using SIZE_TYPE = int;
+    sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, BiValues<float>> csr;
+
+    // Initialize CSR structure
+    csr.rows = 4;
+    csr.cols = 4;
+    csr.ptrs = {std::make_unique<SIZE_TYPE[]>(5)};
+    csr.indices = {std::make_unique<SIZE_TYPE[]>(5)};
+    csr.values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    // Fill CSR data
+    int ptr_data[] = {0, 2, 3, 4, 5};
+    int index_data[] = {0, 1, 2, 3, 0};
+    float value1_data[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    float value2_data[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
+    std::copy(ptr_data, ptr_data + 5, csr.ptrs[0].get());
+    std::copy(index_data, index_data + 5, csr.indices[0].get());
+    std::copy(value1_data, value1_data + 5, csr.values[0].get());
+    std::copy(value2_data, value2_data + 5, csr.values[1].get());
+
+    // Convert CSR to COO
+    auto coo = to_coo(csr, 4);
+
+    // Check COO data
+    CHECK(coo.rows == csr.rows);
+    CHECK(coo.cols == csr.cols);
+    CHECK(coo.ptrs == 5); // nnz
+
+    // Expected COO data
+    int expected_rows[] = {0, 0, 1, 2, 3};
+    int expected_cols[] = {0, 1, 2, 3, 0};
+    float expected_values1[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    float expected_values2[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
+
+    CHECK_VECTOR_EQUAL(vec(coo.indices[0].get(), 5), std::vector<int>(expected_rows, expected_rows + 5));
+    CHECK_VECTOR_EQUAL(vec(coo.indices[1].get(), 5), std::vector<int>(expected_cols, expected_cols + 5));
+    CHECK_VECTOR_EQUAL(vec(coo.values[0].get(), 5), std::vector<float>(expected_values1, expected_values1 + 5));
+    CHECK_VECTOR_EQUAL(vec(coo.values[1].get(), 5), std::vector<float>(expected_values2, expected_values2 + 5));
+}
+
+
+/* #endregion */
+
+/* #region to_csr*/
+
+TEST_CASE("COO to CSR - BiValues", "[to_csr]") {
+    using SIZE_TYPE = int;
+    sparse_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, BiValues<float>> coo;
+
+    // Initialize COO structure
+    coo.rows = 4;
+    coo.cols = 4;
+    coo.ptrs = 5; // nnz
+    coo.indices = {std::make_unique<SIZE_TYPE[]>(5), std::make_unique<SIZE_TYPE[]>(5)};
+    coo.values = {std::make_unique<float[]>(5), std::make_unique<float[]>(5)};
+
+    // Fill COO data
+    int row_data[] = {0, 0, 1, 2, 3};
+    int col_data[] = {0, 1, 2, 3, 0};
+    float value1_data[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    float value2_data[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
+    std::copy(row_data, row_data + 5, coo.indices[0].get());
+    std::copy(col_data, col_data + 5, coo.indices[1].get());
+    std::copy(value1_data, value1_data + 5, coo.values[0].get());
+    std::copy(value2_data, value2_data + 5, coo.values[1].get());
+
+    // Convert COO to CSR
+    auto csr = to_csr(coo, 4);
+
+    // Check CSR dimensions and nnz
+    CHECK(csr.rows == coo.rows);
+    CHECK(csr.cols == coo.cols);
+    CHECK(csr.ptrs[0][csr.rows] == coo.ptrs); // nnz matches
+
+    // Expected CSR data
+    int expected_ptrs[] = {0, 2, 3, 4, 5};
+    int expected_indices[] = {0, 1, 2, 3, 0};
+    float expected_values1[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    float expected_values2[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
+
+    // Verify row pointers
+    CHECK_VECTOR_EQUAL(vec(csr.ptrs[0].get(), 5), std::vector<int>(expected_ptrs, expected_ptrs + 5));
+    // Verify column indices
+    CHECK_VECTOR_EQUAL(vec(csr.indices[0].get(), 5), std::vector<int>(expected_indices, expected_indices + 5));
+    // Verify values
+    CHECK_VECTOR_EQUAL(vec(csr.values[0].get(), 5), std::vector<float>(expected_values1, expected_values1 + 5));
+    CHECK_VECTOR_EQUAL(vec(csr.values[1].get(), 5), std::vector<float>(expected_values2, expected_values2 + 5));
+}
+
+
+/* #endregion */
+
+/*
 TEST_CASE("Convert Functions Tests") {
 
     // Convert vov_to_csr with valid values
@@ -213,7 +426,7 @@ TEST_CASE("merge_csrs basic functionality", "[merge_csrs]") {
         CHECK_VECTOR_EQUAL(result_values, expected_values);
     }
 }
-
+*/
 //I don't actually care about this rn
 /*TEST_CASE("merge_csrs edge cases", "[merge_csrs]") {
     SECTION("Merge with an empty CSR") {
@@ -246,7 +459,7 @@ TEST_CASE("merge_csrs basic functionality", "[merge_csrs]") {
         CHECK_VECTOR_EQUAL(result_values, expected_values);
     }
 }*/
-
+/*
 TEST_CASE("merge_csrs parallel vs sequential", "[merge_csrs]") {
     auto indices = sili::unique_vector<sili::unique_vector<size_t>>{
         {0, 3, 6},
@@ -300,7 +513,7 @@ TEST_CASE("merge_csrs parallel vs sequential", "[merge_csrs]") {
     CHECK_VECTOR_ALMOST_EQUAL(values_parallel, std::vector<float>({0.1,0.4,0.3,0.7,0.6,0.2,0.1,0.2,0.5,0.8,0.1,0.6,0.3,0.9}),0.0000001);
 
 }
-
+*/
 /*TODO: still need to be tested (but they probably work and I've had enough of this, so moving on for now): 
  * remove_element_from_csr
  * add_few_random_to_csr

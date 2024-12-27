@@ -18,6 +18,22 @@
 
 const size_t min_work_per_thread = 500;
 
+// Helper to transform the first SIZE_TYPE into std::array<std::unique_ptr<SIZE_TYPE[]>, 1>
+template <typename SIZE_TYPE>
+using CSRPtrs = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
+
+// Helper to reduce the size of INDEX_ARRAYS from n to n-1
+template <typename INDEX_ARRAYS>
+struct ReduceArraySize {
+    using type = std::array<
+        typename INDEX_ARRAYS::value_type, 
+        std::tuple_size<INDEX_ARRAYS>::value - 1
+    >;
+};
+
+template <typename INDEX_ARRAYS>
+using ReducedArray = typename ReduceArraySize<INDEX_ARRAYS>::type;
+
 /*template <class SIZE_TYPE, class VALUE_TYPE>
 csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
                                                      const sili::unique_vector<sili::unique_vector<VALUE_TYPE>> *values,
@@ -69,7 +85,11 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<s
 }*/
 
 template <typename INDEX_ARRAYS>
-using index_type = std::tuple_element<0, INDEX_ARRAYS>::type::value_type;
+using stdarr_of_uniqarr_type = typename std::remove_extent<
+    typename std::remove_pointer<
+        typename std::tuple_element<0, INDEX_ARRAYS>::type::element_type
+    >::type
+>::type;
 
 template <typename INDEX_ARRAYS>
 constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
@@ -78,15 +98,15 @@ constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
 template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
 sparse_struct<
     SIZE_TYPE,
-    COOPointers<index_type<INDEX_ARRAYS>>, 
-    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
+    COOPointers<stdarr_of_uniqarr_type<INDEX_ARRAYS>>, 
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
     VALUE_ARRAYS
     > to_coo(
-        const sparse_struct<SIZE_TYPE,CSRPointers<index_type<INDEX_ARRAYS>>, INDEX_ARRAYS, VALUE_ARRAYS> &a_csr, 
+        sparse_struct<SIZE_TYPE,CSRPointers<stdarr_of_uniqarr_type<INDEX_ARRAYS>>, INDEX_ARRAYS, VALUE_ARRAYS> &a_csr, 
         const int num_cpus)
 {
     SIZE_TYPE nnz = a_csr.nnz();
-    index_type<INDEX_ARRAYS>* rows = new index_type<INDEX_ARRAYS>[nnz];
+    stdarr_of_uniqarr_type<INDEX_ARRAYS>* rows = new stdarr_of_uniqarr_type<INDEX_ARRAYS>[nnz];
 
     #pragma omp parallel num_threads(num_cpus)
     {
@@ -101,14 +121,14 @@ sparse_struct<
                 static_cast<std::ptrdiff_t>(0), 
                 std::upper_bound
                 (
-                    a_csr.ptrs.get(), 
-                    a_csr.ptrs.get() + a_csr.rows, start) - a_csr.ptrs.get()-1
+                    a_csr.ptrs[0].get(), 
+                    a_csr.ptrs[0].get() + a_csr.rows, start) - a_csr.ptrs[0].get()-1
                 )
             );
 
         SIZE_TYPE iter = start;
         while (iter < end) {
-            if (iter >= a_csr.ptrs[row + 1]) {
+            if (iter >= a_csr.ptrs[0][row + 1]) {
                 row++;
             }
             rows[iter] = row;
@@ -118,19 +138,19 @@ sparse_struct<
 
     sparse_struct<
     SIZE_TYPE,
-    COOPointers<index_type<INDEX_ARRAYS>>, 
-    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
+    COOPointers<stdarr_of_uniqarr_type<INDEX_ARRAYS>>, 
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
     VALUE_ARRAYS
     > coo;
     coo.rows = a_csr.rows;
     coo.cols = a_csr.cols;
     coo.ptrs = nnz;
-    std::get<0>(coo.indices).reset(rows);
+    coo.indices[0].reset(rows);
     for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
-        std::get<idx+1>(coo.indices).reset(std::get<idx>(a_csr));
+        coo.indices[idx+1].reset(a_csr.indices[idx].release());
     }
     for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
-        std::get<valIdx>(coo.values).reset(std::get<valIdx>(a_csr));
+        coo.values[valIdx].reset(a_csr.values[valIdx].release());
     }
 
     return coo;
@@ -141,20 +161,21 @@ sparse_struct<
 template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
 sparse_struct<
     SIZE_TYPE,
-    CSRPointers<index_type<INDEX_ARRAYS>>, 
-    std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>>,
+    CSRPtrs<SIZE_TYPE>, // First SIZE_TYPE transformed to CSRPtrs
+    ReducedArray<INDEX_ARRAYS>, // INDEX_ARRAYS reduced by one
     VALUE_ARRAYS
 > to_csr(
-    const sparse_struct<
-        SIZE_TYPE, 
-        COOPointers<index_type<INDEX_ARRAYS>>, 
-        std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS> + 1>, 
-        VALUE_ARRAYS> &a_coo, 
+    sparse_struct<
+        SIZE_TYPE,
+        COOPointers<SIZE_TYPE>, // First SIZE_TYPE is unchanged here
+        INDEX_ARRAYS,           // INDEX_ARRAYS as provided
+        VALUE_ARRAYS
+    > &a_coo, 
     const int num_cpus)
 {
     SIZE_TYPE nnz = a_coo.ptrs;
     SIZE_TYPE num_rows = a_coo.rows;
-    auto rows = std::get<0>(a_coo.indices).get();
+    auto rows = a_coo.indices[0].get();
 
     // Parallel section to determine min_row and max_row for each thread
     SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
@@ -223,20 +244,21 @@ sparse_struct<
 
     // Create and return the CSR sparse structure
     sparse_struct<
-        SIZE_TYPE, 
-        CSRPointers<index_type<INDEX_ARRAYS>>, 
-        std::array<std::unique_ptr<index_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>>,
-        VALUE_ARRAYS> csr;
+    SIZE_TYPE,
+    CSRPtrs<SIZE_TYPE>, // First SIZE_TYPE transformed to CSRPtrs
+    ReducedArray<INDEX_ARRAYS>, // INDEX_ARRAYS reduced by one
+    VALUE_ARRAYS
+    > csr;
 
     csr.rows = num_rows;
     csr.cols = a_coo.cols;
-    csr.ptrs.reset(ptrs);
+    csr.ptrs[0].reset(ptrs);
     //std::get<0>(csr.indices).reset(std::get<1>(a_coo.indices).release());
-    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
-        std::get<idx>(csr.values).reset(std::get<idx+1>(a_coo.indices).release());
+    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>-1; ++idx) {
+        csr.indices[idx].reset(a_coo.indices[idx+1].release());
     }
     for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
-        std::get<valIdx>(csr.values).reset(std::get<valIdx+1>(a_coo.values).release());
+        csr.values[valIdx].reset(a_coo.values[valIdx].release());
     }
 
     return csr;
