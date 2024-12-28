@@ -2,6 +2,7 @@
 #include "coo.hpp"
 #include <cstdlib>
 #include <new>
+#include <vector>
 
 /**
  * Perform a forward pass of a sparse linear layer with sparse input
@@ -19,11 +20,12 @@ void sparse_linear_csr_csc_forward(
     const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     VALUE_TYPE* output,
     bool train,
-    VALUE_TYPE solidify = 0.01
+    VALUE_TYPE solidify = 0.01,
+    const int num_cpus=4 // usually good default even in the case of many more cpus
 ){
     SIZE_TYPE num_outputs = input_tensor.rows * weights.connections.cols;
 
-    #pragma omp parallel reduction(+:output[:num_outputs])
+    #pragma omp parallel reduction(+:output[:num_outputs]) num_threads(num_cpus)
     {
         for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++) {
             // reset this to 0 every batch
@@ -70,7 +72,7 @@ template <typename SIZE_TYPE, typename VALUE_TYPE>
 void outer_product_spv_coo(
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& output_gradient_tensor,
-    COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen  // asumes gen is pre-reserved
+    COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>& gen  // asumes gen is pre-reserved
     ){
 
     for (SIZE_TYPE batch = 0; batch < input_tensor.rows; batch++) {
@@ -172,16 +174,29 @@ template <typename SIZE_TYPE, typename VALUE_TYPE>
 CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& output_gradient_tensor,
-    const int num_cpus)
+    const int num_cpus=4)
 {
+
+    // Calculate actual space to reserve based on Hadamard product of row lengths
+    SIZE_TYPE total_reserve = 0;
+    for (SIZE_TYPE batch = 0; batch < input_tensor.rows; ++batch) {
+        SIZE_TYPE in_len = input_tensor.ptrs[0][batch + 1] - input_tensor.ptrs[0][batch];
+        SIZE_TYPE out_len = output_gradient_tensor.ptrs[0][batch + 1] - output_gradient_tensor.ptrs[0][batch];
+        total_reserve += in_len * out_len;
+    }
+
+    if(total_reserve==0){
+        return CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE>();
+    }
+
     // SECTION 1: Create COO from top input and outputs in sparse vectors
     COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> gen_coo;
-    gen_coo.ptrs = input_tensor.nnz()*output_gradient_tensor.nnz();
-    gen_coo.indices[0].reset(new SIZE_TYPE[gen_coo.nnz()]);
-    gen_coo.indices[1].reset(new SIZE_TYPE[gen_coo.nnz()]);
-    gen_coo.values[0].reset(new VALUE_TYPE[gen_coo.nnz()]);
-    gen_coo.cols = output_gradient_tensor.rows;
-    gen_coo.rows = input_tensor.rows;
+    gen_coo.ptrs = total_reserve;
+    gen_coo.indices[0].reset(new SIZE_TYPE[gen_coo.nnz()]{0});
+    gen_coo.indices[1].reset(new SIZE_TYPE[gen_coo.nnz()]{0});
+    gen_coo.values[0].reset(new VALUE_TYPE[gen_coo.nnz()]{0});
+    gen_coo.cols = output_gradient_tensor.cols;
+    gen_coo.rows = input_tensor.cols;
     outer_product_spv_coo(
         input_tensor,
         output_gradient_tensor,
@@ -189,8 +204,8 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     );
 
     //SECTION 2: sort COO and merge duplicates
-    auto duplicates = merge_sort_coo(gen_coo.indices[0], gen_coo.indices[1], gen_coo.values[0], gen_coo.nnz());
-    gen_coo.ptrs = gen_coo.ptrs - duplicates; //update nnz
+    auto duplicates = merge_sort_coo(gen_coo.indices, gen_coo.values, gen_coo.nnz());
+    gen_coo.ptrs -= duplicates; //update nnz
 
     //SECTION 3: convert COO to CSC (swap rows/cols in the coo for to_csr to work)
     auto csc_out = to_csr(gen_coo, num_cpus);
