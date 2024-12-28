@@ -18,11 +18,9 @@
 
 const size_t min_work_per_thread = 500;
 
-// Helper to transform the first SIZE_TYPE into std::array<std::unique_ptr<SIZE_TYPE[]>, 1>
 template <typename SIZE_TYPE>
 using CSRPtrs = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
 
-// Helper to reduce the size of INDEX_ARRAYS from n to n-1
 template <typename INDEX_ARRAYS>
 struct ReduceArraySize {
     using type = std::array<

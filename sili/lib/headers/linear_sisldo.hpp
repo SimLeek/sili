@@ -19,33 +19,47 @@ void sparse_linear_csr_csc_forward(
     const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     VALUE_TYPE* output,
     bool train,
-    //Value beta=0.9, // beta may be larger than optim beta to induce sparsity
-    VALUE_TYPE solidify=0.01 // multiplies importances by 1.0+solidify so eventually they become very hard to remove
+    VALUE_TYPE solidify = 0.01
 ){
-    #pragma omp parallel
+    SIZE_TYPE num_outputs = input_tensor.rows * weights.connections.cols;
+
+    #pragma omp parallel reduction(+:output[:num_outputs])
     {
-        for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++)
-        {
-            #pragma omp for  // omp parallelization on input, not batch, because batch is assumed to be small
-            for (SIZE_TYPE input_ptr = input_tensor.ptrs[0][batch_number]; input_ptr < input_tensor.ptrs[0][batch_number + 1]; input_ptr++)
+        for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++) {
+            // reset this to 0 every batch
+            std::vector<VALUE_TYPE> thread_output(weights.connections.cols, 0);
+            #pragma omp for  // Parallelize across inputs
+            for (SIZE_TYPE input_ptr = input_tensor.ptrs[0][batch_number]; 
+                 input_ptr < input_tensor.ptrs[0][batch_number + 1]; 
+                 input_ptr++) 
             {
                 SIZE_TYPE input_index = input_tensor.indices[0][input_ptr];
                 VALUE_TYPE input_value = input_tensor.values[0][input_ptr];
 
-                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; weight_ptr < weights.connections.ptrs[0][input_index + 1]; weight_ptr++)
+                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; 
+                     weight_ptr < weights.connections.ptrs[0][input_index + 1]; 
+                     weight_ptr++) 
                 {
-                    // Note: For CSC, we're using 'input_index' as the row index due to the transpose nature of CSC
+                    // Compute contribution
                     VALUE_TYPE weight_value = weights.connections.values[0][weight_ptr];
                     SIZE_TYPE output_index = weights.connections.indices[0][weight_ptr];
-                    auto weight_contribution = weight_value*input_value;
-                    if(train){
-                        //importances should be third, after backprop
-                        weights.connections.values[2][weight_ptr] = weights.connections.values[2][weight_ptr] + weight_contribution*solidify;
+                    auto weight_contribution = weight_value * input_value;
+
+                    if (train) {
+                        //weights are unique per input-output combo and batches are sequential here, so atomic isn't necessary
+                        // keeping the for on the inputs is important!
+                        weights.connections.values[2][weight_ptr] += weight_contribution * solidify; 
                     }
 
-                    #pragma omp atomic
-                    output[output_index] += weight_contribution;
+                    // Accumulate in thread-private buffer
+                    thread_output[output_index] += weight_contribution;
                 }
+            }
+
+            //don't prallelize here, because the specific thread needs to copy its full output, not split further
+            for (SIZE_TYPE i = batch_number * weights.connections.cols; i < (batch_number+1) * weights.connections.cols; i++) {
+                //don't use pragma omp atomic here either. reduction takes care of that: "reduction(+:output[:num_outputs])"
+                output[i] += thread_output[i-(batch_number * weights.connections.cols)];
             }
         }
     }
@@ -268,8 +282,8 @@ void optim_synaptogenesis(
     }
 
     decltype(weights.connections) new_connections;
-    using index_type = std::tuple_element<0, decltype(new_connections.indices)>::type::value_type;
-    using value_type = std::tuple_element<0, decltype(new_connections.values)>::type::value_type;
+    using index_type = stdarr_of_uniqarr_type<decltype(new_connections.indices)>;
+    using value_type = stdarr_of_uniqarr_type<decltype(new_connections.values)>;
     for (std::size_t idx = 0; idx < weights.probes.num_indices; ++idx) {
         std::get<idx>(new_connections.indices).reset(std::get<idx>(weights.probes.indices));
     }
@@ -287,14 +301,14 @@ void optim_synaptogenesis(
     // todo: pull this out into a "reserve COO for merging" function
     size_t merged_size = coo_weights.nnz() + coo_updates.nnz();
     decltype(coo_weights) merged_coo;
-    using index_type = std::tuple_element<0, decltype(merged_coo.indices)>::type::value_type;
-    using value_type = std::tuple_element<0, decltype(merged_coo.values)>::type::value_type;
+    using index_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.indices)>;
+    using value_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.values)>;
 
     for (std::size_t idx = 0; idx < merged_coo.num_indices; ++idx) {
-        std::get<idx>(merged_coo.indices).reset(new index_type[merged_size]);
+        std::get<idx>(merged_coo.indices).reset(new index_type2[merged_size]);
     }
     for (std::size_t valIdx = 0; valIdx < merged_coo.num_values; ++valIdx) {
-        std::get<valIdx>(merged_coo.values).reset(new value_type[merged_size]);
+        std::get<valIdx>(merged_coo.values).reset(new value_type2[merged_size]);
     }
 
     // STEP 4: Merge weights
@@ -314,14 +328,12 @@ void optim_synaptogenesis(
     if (new_nnz > max_weights) {
         if(max_weights>weights.connections.nnz()){
             decltype(coo_weights) weight_out_container;
-            using index_type = std::tuple_element<0, decltype(weight_out_container.indices)>::type::value_type;
-            using value_type = std::tuple_element<0, decltype(weight_out_container.values)>::type::value_type;
 
             for (std::size_t idx = 0; idx < weight_out_container.num_indices; ++idx) {
-                std::get<idx>(weight_out_container.indices).reset(new index_type[max_weights]);
+                std::get<idx>(weight_out_container.indices).reset(new stdarr_of_uniqarr_type<decltype(weight_out_container.indices)>[max_weights]);
             }
             for (std::size_t valIdx = 0; valIdx < weight_out_container.num_values; ++valIdx) {
-                std::get<valIdx>(weight_out_container.values).reset(new value_type[max_weights]);
+                std::get<valIdx>(weight_out_container.values).reset(new stdarr_of_uniqarr_type<decltype(weight_out_container.values)>[max_weights]);
             }
             coo_subtract_bottom_k(
             merged_coo.indices, merged_coo.values, 
