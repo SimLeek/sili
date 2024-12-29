@@ -284,6 +284,26 @@ void clear_csr(sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& csr) {
     csr.cols = 0;
 }
 
+template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
+void clear_coo(sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& csr) {
+    // Set nnz to 0
+    csr.ptrs = 0;
+
+    // Clear indices array
+    for (auto& index : csr.indices) {
+        index.reset();
+    }
+
+    // Clear values array
+    for (auto& value : csr.values) {
+        value.reset();
+    }
+
+    // Set rows and columns to zero
+    csr.rows = 0;
+    csr.cols = 0;
+}
+
 // merges two CSRs
 /*template <typename SIZE_TYPE, typename VALUE_ARRAYS>
 sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> merge_csrs(

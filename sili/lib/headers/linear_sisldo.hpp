@@ -171,7 +171,7 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> coo_to_csc(
 }*/
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
+COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& output_gradient_tensor,
     const int num_cpus=4)
@@ -186,7 +186,7 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     }
 
     if(total_reserve==0){
-        return CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE>();
+        return COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>();
     }
 
     // SECTION 1: Create COO from top input and outputs in sparse vectors
@@ -208,8 +208,8 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
     gen_coo.ptrs -= duplicates; //update nnz
 
     //SECTION 3: convert COO to CSC (swap rows/cols in the coo for to_csr to work)
-    auto csc_out = to_csr(gen_coo, num_cpus);
-    return csc_out;
+    //auto csc_out = to_csr(gen_coo, num_cpus);
+    return gen_coo;
 }
 
 /**
@@ -221,7 +221,7 @@ CSRSynaptogenesis<SIZE_TYPE, VALUE_TYPE> generate_new_weights_csc(
 template <class SIZE_TYPE, class VALUE_TYPE>
 void sparse_linear_vectorized_backward_is(
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& in_tensor,  // this should be a fraction of active inputs for potentially making in*out new synapses
-    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad_synaptogenesis, // this should be a fraction of output gradients for potentially making in*out new synapses
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad_sparse, // this should be a fraction of output gradients for backpropogating to the input gradient, can be same as prev or different
     VALUE_TYPE* input_gradients,
@@ -230,20 +230,19 @@ void sparse_linear_vectorized_backward_is(
 {
     SIZE_TYPE batch_size = in_tensor.rows;
     if (in_tensor.nnz()>0 && out_grad_synaptogenesis.nnz()>0){
-        // todo: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
-        // todo: handle the case where weights.probes already exists and merge potential weights into probes
+        // todo2: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
+        // todo2: handle the case where weights.probes already exists and merge potential weights into probes
+        //todo: need to keep only the important value arrays for this and drop the others. Make a view op for it
         weights.probes = generate_new_weights_csc(in_tensor, out_grad_synaptogenesis, num_cpus);
     }
 //todo: use a vector of pointers to keep the output ptr
-    std::vector<SIZE_TYPE> out_grad_ptrs(out_grad_sparse.cols, 0);
+    std::vector<SIZE_TYPE> out_grad_ptrs(weights.connections.rows, 0);
 
-    #pragma omp parallel num_threads(num_cpus) shared(out_grad_ptrs)
+    #pragma omp parallel num_threads(num_cpus) shared(out_grad_ptrs, in_tensor)
     {
-        std::vector<VALUE_TYPE> thread_input_gradients(in_tensor.cols, 0);
-
         for (SIZE_TYPE batch = 0; batch < in_tensor.rows; batch++)
         {
-            std::fill(thread_input_gradients.begin(), thread_input_gradients.end(), 0);
+            std::fill(out_grad_ptrs.begin(), out_grad_ptrs.end(), 0);  //todo: fill sections in every thread
 
 #pragma omp for
             for (SIZE_TYPE input_ptr = in_tensor.ptrs[0][batch]; input_ptr < in_tensor.ptrs[0][batch + 1]; input_ptr++)
@@ -265,8 +264,9 @@ void sparse_linear_vectorized_backward_is(
             
             for (SIZE_TYPE output_ptr = out_grad_sparse.ptrs[0][batch]; output_ptr < out_grad_sparse.ptrs[0][batch + 1]; output_ptr++)
             {
-                auto output_index = in_tensor.indices[0][output_ptr];
-                auto output_value = in_tensor.values[0][output_ptr];
+                auto output_index = out_grad_sparse.indices[0][output_ptr];
+                auto output_grad = out_grad_sparse.values[0][output_ptr];
+
                 #pragma omp for // also parallel w/ respect to input
                 for (SIZE_TYPE input_index = 0; input_index < weights.connections.rows; input_index++)
                 {
@@ -279,9 +279,9 @@ void sparse_linear_vectorized_backward_is(
                         continue; // no synapse connection to this output, move to next input
                     }
                     auto weight_value = weights.connections.values[0][full_ptr];
-                    auto output_index = weights.connections.indices[0][full_ptr];
+                    //auto output_index = weights.connections.indices[0][full_ptr];
                     //shouldn't need a parallel reduction, because the inputs are all accessed in parallel
-                    input_gradients[input_index] += weight_value * output_value;
+                    input_gradients[input_index] += weight_value * output_grad;
                 }
             }
         }
@@ -394,7 +394,7 @@ void optim_synaptogenesis(
         importance_tensor[weight_ptr] = weight_instant_importance * beta;
     }
 
-    decltype(weights.connections) new_connections;
+    /*decltype(weights.connections) new_connections;
     using index_type = stdarr_of_uniqarr_type<decltype(new_connections.indices)>;
     using value_type = stdarr_of_uniqarr_type<decltype(new_connections.values)>;
     for (std::size_t idx = 0; idx < weights.probes.num_indices; ++idx) {
@@ -403,16 +403,16 @@ void optim_synaptogenesis(
     for (std::size_t valIdx = 0; valIdx < weights.probes.num_values-1; ++valIdx) {
         std::get<valIdx>(new_connections.values).reset(new value_type[weights.probes.indices]{0}); // todo: if desired, set idx0: connection value
     }
-    std::get<weights.probes.num_values-1>(new_connections.values).reset(importance_tensor);
+    std::get<weights.probes.num_values-1>(new_connections.values).reset(importance_tensor);*/
 
     // STEP 2: Convert CSR to COO format
     auto coo_weights = to_coo(weights.connections, num_cpus);
-    auto coo_updates = to_coo(new_connections, num_cpus);
+    //auto coo_updates = to_coo(new_connections, num_cpus);
 
     // STEP 3: Allocate arrays for merged weights
     // note: certain architectures may prefer the slower nlogn method due to closer memory
     // todo: pull this out into a "reserve COO for merging" function
-    size_t merged_size = coo_weights.nnz() + coo_updates.nnz();
+    size_t merged_size = coo_weights.nnz() + weights.probes.nnz();
     decltype(coo_weights) merged_coo;
     using index_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.indices)>;
     using value_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.values)>;
@@ -430,12 +430,13 @@ void optim_synaptogenesis(
      */
     size_t duplicates = parallel_merge_sorted_coos(
         coo_weights.indices, coo_weights.values, 
-        coo_updates.indices, coo_updates.values ,
+        weights.probes.indices, weights.probes.values ,
         merged_coo.indices, merged_coo.values, 
-        coo_weights.nnz(), coo_updates.nnz(),
+        coo_weights.nnz(), weights.probes.nnz(),
         num_cpus);
 
-    size_t new_nnz = coo_weights.nnz() + coo_updates.nnz() - duplicates;
+    size_t new_nnz = coo_weights.nnz() + weights.probes.nnz() - duplicates;
+    merged_coo.ptrs = new_nnz;
 
     // Check if pruning is required
     if (new_nnz > max_weights) {
@@ -453,19 +454,19 @@ void optim_synaptogenesis(
             weight_out_container.indices, weight_out_container.values,
             new_nnz, new_nnz - max_weights, num_cpus
             );
-            weights.connections = to_csr(weight_out_container);
+            weights.connections = to_csr(weight_out_container, num_cpus);
         }else{
             coo_subtract_bottom_k(
                 merged_coo.indices, merged_coo.values, 
                 coo_weights.indices, coo_weights.values,
                 new_nnz, new_nnz - max_weights, num_cpus
             );
-            weights.connections = to_csr(coo_weights);
+            weights.connections = to_csr(coo_weights, num_cpus);
         }
     }else{
-        weights.connections = to_csr(merged_coo);
+        weights.connections = to_csr(merged_coo, num_cpus);
     }
-    clear_csr(weights.probes);
+    clear_coo(weights.probes);
     weights.probes.rows = weights.connections.rows;
     weights.probes.cols = weights.connections.cols;
 }

@@ -166,7 +166,7 @@ TEST_CASE("Outer Product SPV COO", "[outer_product_spv_coo]") {
 /* #endregion */
 
 /* #region outer_product_spv_coo*/
-
+/*
 TEST_CASE("Generate New Weights CSC", "[generate_new_weights_csc]") {
     using SIZE_TYPE = int;
     using VALUE_TYPE = float;
@@ -239,6 +239,187 @@ TEST_CASE("Generate New Weights CSC", "[generate_new_weights_csc]") {
     auto csc_empty = generate_new_weights_csc(empty_tensor, empty_tensor);
 
     // nothing to verity, we passed if it didn't crash here
+}
+
+*/
+/* #endregion */
+
+/* #region sparse_linear_vectorized_backward_is */
+
+TEST_CASE("Sparse Linear Vectorized Backward IS", "[sparse_linear_vectorized_backward_is]") {
+    using SIZE_TYPE = int;
+    using VALUE_TYPE = float;
+
+    // Input Tensor (CSR)
+    CSRInput<SIZE_TYPE, VALUE_TYPE> input_tensor;
+    input_tensor.rows = 2;  // 2 batches
+    input_tensor.cols = 4;  // 4 input features
+    input_tensor.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    input_tensor.indices = {std::make_unique<SIZE_TYPE[]>(4)};
+    input_tensor.values = {std::make_unique<VALUE_TYPE[]>(4)};
+
+    SIZE_TYPE input_ptrs_data[] = {0, 2, 4};
+    SIZE_TYPE input_indices_data[] = {0, 2, 1, 3};
+    VALUE_TYPE input_values_data[] = {1.0, 0.5, 2.0, 1.5};
+
+    std::copy(input_ptrs_data, input_ptrs_data + 3, input_tensor.ptrs[0].get());
+    std::copy(input_indices_data, input_indices_data + 4, input_tensor.indices[0].get());
+    std::copy(input_values_data, input_values_data + 4, input_tensor.values[0].get());
+
+    // Output Gradient Tensor (CSR) for Synaptogenesis
+    CSRInput<SIZE_TYPE, VALUE_TYPE> out_grad_synaptogenesis;
+    out_grad_synaptogenesis.rows = 2;
+    out_grad_synaptogenesis.cols = 3;
+    out_grad_synaptogenesis.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    out_grad_synaptogenesis.indices = {std::make_unique<SIZE_TYPE[]>(3)};
+    out_grad_synaptogenesis.values = {std::make_unique<VALUE_TYPE[]>(3)};
+
+    SIZE_TYPE out_grad_syn_ptrs[] = {0, 1, 3};
+    SIZE_TYPE out_grad_syn_indices[] = {0, 1, 2};
+    VALUE_TYPE out_grad_syn_values[] = {0.7, 0.6, 0.9};
+
+    std::copy(out_grad_syn_ptrs, out_grad_syn_ptrs + 3, out_grad_synaptogenesis.ptrs[0].get());
+    std::copy(out_grad_syn_indices, out_grad_syn_indices + 3, out_grad_synaptogenesis.indices[0].get());
+    std::copy(out_grad_syn_values, out_grad_syn_values + 3, out_grad_synaptogenesis.values[0].get());
+
+    // Output Gradient Tensor (CSR) for Backpropagation
+    CSRInput<SIZE_TYPE, VALUE_TYPE> out_grad_sparse;
+    out_grad_sparse.rows = 2;
+    out_grad_sparse.cols = 3;
+    out_grad_sparse.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    out_grad_sparse.indices = {std::make_unique<SIZE_TYPE[]>(3)};
+    out_grad_sparse.values = {std::make_unique<VALUE_TYPE[]>(3)};
+
+    SIZE_TYPE out_grad_sparse_ptrs[] = {0, 2, 3};
+    SIZE_TYPE out_grad_sparse_indices[] = {0, 2, 1};
+    VALUE_TYPE out_grad_sparse_values[] = {1.0, 0.5, 0.8};
+
+    std::copy(out_grad_sparse_ptrs, out_grad_sparse_ptrs + 3, out_grad_sparse.ptrs[0].get());
+    std::copy(out_grad_sparse_indices, out_grad_sparse_indices + 3, out_grad_sparse.indices[0].get());
+    std::copy(out_grad_sparse_values, out_grad_sparse_values + 3, out_grad_sparse.values[0].get());
+
+    // SparseLinearWeights
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> weights;
+    weights.connections.ptrs = {std::make_unique<SIZE_TYPE[]>(5)};
+    weights.connections.indices = {std::make_unique<SIZE_TYPE[]>(8)};
+    weights.connections.values = {std::make_unique<VALUE_TYPE[]>(8), std::make_unique<VALUE_TYPE[]>(8)};
+    weights.connections.rows = 4; // 4 inputs
+    weights.connections.cols = 3; // 3 outputs
+
+    SIZE_TYPE weights_ptrs_data[] = {0, 2, 4, 6, 8};
+    SIZE_TYPE weights_indices_data[] = {0, 1, 1, 2, 0, 2, 1, 2};
+    VALUE_TYPE weights_values_data[] = {0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.4, 0.5};
+    VALUE_TYPE weights_props_data[] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    std::copy(weights_ptrs_data, weights_ptrs_data + 5, weights.connections.ptrs[0].get());
+    std::copy(weights_indices_data, weights_indices_data + 8, weights.connections.indices[0].get());
+    std::copy(weights_values_data, weights_values_data + 8, weights.connections.values[0].get());
+    std::copy(weights_props_data, weights_props_data + 8, weights.connections.values[1].get());
+
+    // Dense Output Gradients
+    std::vector<VALUE_TYPE> output_gradients = {0.5, 0.6, 0.7, 0.8, 0.9, 1.0};  // 3 outputs * 2 batches
+
+    // Input Gradients
+    std::vector<VALUE_TYPE> input_gradients(4, 0);  // 4 inputs initialized to 0
+
+    // Expected Input Gradients
+    std::vector<VALUE_TYPE> expected_input_gradients = {0.62, 0.7, 1.1, 0.57};
+
+    // Perform Backpropagation
+    sparse_linear_vectorized_backward_is(input_tensor, weights, out_grad_synaptogenesis, out_grad_sparse,
+                                         input_gradients.data(), output_gradients.data(), 4);
+
+    // Validate Results
+    CHECK_VECTOR_ALMOST_EQUAL(input_gradients, expected_input_gradients);
+
+    // Expected Weights Gradients
+    std::vector<VALUE_TYPE> expected_weights_gradients = {0.5, 0.7, 1.6, 2.0, 0.25, 0.45, 1.2, 1.5};
+
+    // Validate Weight Gradients
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[1].get(),
+                                weights.connections.values[1].get() + 8),
+        expected_weights_gradients);
+
+        // Compute Expected Probes from Outer Product
+    std::vector<SIZE_TYPE> expected_rows{0, 1, 1, 2, 3, 3};
+    std::vector<SIZE_TYPE> expected_cols{0, 1, 2, 0, 1, 2};
+    std::vector<VALUE_TYPE> expected_values{0.7, 1.2, 1.8, 0.35, 0.9, 1.35};
+
+    // Validate Probes
+    REQUIRE(weights.probes.nnz() == static_cast<SIZE_TYPE>(expected_rows.size()));
+
+    CHECK_VECTOR_EQUAL(
+        std::vector<SIZE_TYPE>(weights.probes.indices[0].get(),
+                               weights.probes.indices[0].get() + weights.probes.nnz()),
+        expected_rows);
+
+    CHECK_VECTOR_EQUAL(
+        std::vector<SIZE_TYPE>(weights.probes.indices[1].get(),
+                               weights.probes.indices[1].get() + weights.probes.nnz()),
+        expected_cols);
+
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.probes.values[0].get(),
+                                weights.probes.values[0].get() + weights.probes.nnz()),
+        expected_values);
+
+    //-------------one hot modification tests--------------
+
+        // One-Hot Test: Modify a single weight and validate results
+    weights.connections.values[0][3] = 0.9;  // Modify one weight
+    std::fill(input_gradients.begin(), input_gradients.end(), 0);  // Reset input gradients
+    std::fill(weights.connections.values[1].get(), weights.connections.values[1].get() + 8, 0);  // Reset weight gradients
+
+    // Expected Gradients for Modified Weight
+    std::vector<VALUE_TYPE> expected_input_gradients_one_hot = {0.62, 0.85, 1.1, 0.57};
+    std::vector<VALUE_TYPE> expected_weights_gradients_one_hot = {0.5, 0.7, 1.6, 2.0, 0.25, 0.45, 1.2, 1.5}; //stays the same because w_grad is in*o_grad
+
+    sparse_linear_vectorized_backward_is(input_tensor, weights, out_grad_synaptogenesis, out_grad_sparse,
+                                         input_gradients.data(), output_gradients.data(), 4);
+
+    CHECK_VECTOR_ALMOST_EQUAL(input_gradients, expected_input_gradients_one_hot);
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[1].get(),
+                                weights.connections.values[1].get() + 8),
+        expected_weights_gradients_one_hot);
+
+    // One-Hot Test: Modify a single input value
+    input_tensor.values[0][2] = 1.2;  // Modify one input value (input index 2 is 1, so this is input 1)
+    std::fill(input_gradients.begin(), input_gradients.end(), 0);  // Reset input gradients
+    std::fill(weights.connections.values[1].get(), weights.connections.values[1].get() + 8, 0);  // Reset weight gradients
+
+    // Expected Gradients for Modified Input
+    std::vector<VALUE_TYPE> expected_input_gradients_one_hot_input = {0.62, 0.85, 1.1, 0.57}; // stays same because i_grad=w_val*o_grad
+    std::vector<VALUE_TYPE> expected_weights_gradients_one_hot_input = {0.5, 0.7, 0.96, 1.2, 0.25, 0.45, 1.2, 1.5}; //2-3 are on ptr 1, so they change
+
+    sparse_linear_vectorized_backward_is(input_tensor, weights, out_grad_synaptogenesis, out_grad_sparse,
+                                         input_gradients.data(), output_gradients.data(), 4);
+
+    CHECK_VECTOR_ALMOST_EQUAL(input_gradients, expected_input_gradients_one_hot_input);
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[1].get(),
+                                weights.connections.values[1].get() + 8),
+        expected_weights_gradients_one_hot_input);
+
+    // One-Hot Test: Modify a single output gradient
+    out_grad_sparse.values[0][0] = 1.5;  // Modify one sparse gradient value
+    output_gradients[0] = 1.5; // modify it correctly for weights too
+    std::fill(input_gradients.begin(), input_gradients.end(), 0);  // Reset input gradients
+    std::fill(weights.connections.values[1].get(), weights.connections.values[1].get() + 8, 0);  // Reset weight gradients
+
+    // Expected Gradients for Modified Sparse Gradient
+    std::vector<VALUE_TYPE> expected_input_gradients_one_hot_sparse_grad = {0.77, 0.85, 1.45, 0.57};  // only 0 and 2 are modified (1 is changed from the weight) because out 0 connects to in 0 and 2
+    std::vector<VALUE_TYPE> expected_weights_gradients_one_hot_sparse_grad = {1.5, 0.7, 0.96, 1.2, 0.75, 0.45, 1.2, 1.5};
+
+    sparse_linear_vectorized_backward_is(input_tensor, weights, out_grad_synaptogenesis, out_grad_sparse,
+                                         input_gradients.data(), output_gradients.data(), 4);
+
+    CHECK_VECTOR_ALMOST_EQUAL(input_gradients, expected_input_gradients_one_hot_sparse_grad);
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[1].get(),
+                                weights.connections.values[1].get() + 8),
+        expected_weights_gradients_one_hot_sparse_grad);
 }
 
 
