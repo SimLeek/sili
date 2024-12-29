@@ -222,22 +222,29 @@ template <class SIZE_TYPE, class VALUE_TYPE>
 void sparse_linear_vectorized_backward_is(
     const CSRInput<SIZE_TYPE, VALUE_TYPE>& in_tensor,  // this should be a fraction of active inputs for potentially making in*out new synapses
     const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
-    const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad, // this should be a fraction of output gradients for potentially making in*out new synapses
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad_synaptogenesis, // this should be a fraction of output gradients for potentially making in*out new synapses
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad_sparse, // this should be a fraction of output gradients for backpropogating to the input gradient, can be same as prev or different
     VALUE_TYPE* input_gradients,
-    VALUE_TYPE* output_gradients, // this is the full gradient for computing the full input gradient
+    VALUE_TYPE* output_gradients, // this is the full dense gradient. This makes computing weight gradients fast and you already have it anyway.
     const int num_cpus)
 {
     SIZE_TYPE batch_size = in_tensor.rows;
-    if (in_tensor.nnz()>0 && out_grad.nnz()>0){
+    if (in_tensor.nnz()>0 && out_grad_synaptogenesis.nnz()>0){
         // todo: after generate_new_weights_csc is optimized to use CSRs more instead of COOs, skip indices already in weight_tensor
         // todo: handle the case where weights.probes already exists and merge potential weights into probes
-        weights.probes = generate_new_weights_csc(in_tensor, out_grad, num_cpus);
+        weights.probes = generate_new_weights_csc(in_tensor, out_grad_synaptogenesis, num_cpus);
     }
+//todo: use a vector of pointers to keep the output ptr
+    std::vector<SIZE_TYPE> out_grad_ptrs(out_grad_sparse.cols, 0);
 
-#pragma omp parallel num_threads(num_cpus)
+    #pragma omp parallel num_threads(num_cpus) shared(out_grad_ptrs)
     {
+        std::vector<VALUE_TYPE> thread_input_gradients(in_tensor.cols, 0);
+
         for (SIZE_TYPE batch = 0; batch < in_tensor.rows; batch++)
         {
+            std::fill(thread_input_gradients.begin(), thread_input_gradients.end(), 0);
+
 #pragma omp for
             for (SIZE_TYPE input_ptr = in_tensor.ptrs[0][batch]; input_ptr < in_tensor.ptrs[0][batch + 1]; input_ptr++)
             {
@@ -248,13 +255,104 @@ void sparse_linear_vectorized_backward_is(
                 {
                     auto weight_value = weights.connections.values[0][weight_ptr];
                     auto output_index = weights.connections.indices[0][weight_ptr];
-                    input_gradients[input_index] += weight_value * output_gradients[output_index * batch_size + batch];
+                    //don't handle input grad here, because it is not parallel. The same input will be accessed by different batches.
+                    // it also limits it to only activated inputs, but output grad could backprop to connected inputs that should've fired
+                    // wrong code: input_gradients[input_index] += weight_value * output_gradients[output_index * batch_size + batch];
+                    //anyway, this loop is for weight backprop:
                     weights.connections.values[1][weight_ptr] += output_gradients[output_index * batch_size + batch] * input_value;  // gradients for an echo state network, stored after values
+                }
+            }
+            
+            for (SIZE_TYPE output_ptr = out_grad_sparse.ptrs[0][batch]; output_ptr < out_grad_sparse.ptrs[0][batch + 1]; output_ptr++)
+            {
+                auto output_index = in_tensor.indices[0][output_ptr];
+                auto output_value = in_tensor.values[0][output_ptr];
+                #pragma omp for // also parallel w/ respect to input
+                for (SIZE_TYPE input_index = 0; input_index < weights.connections.rows; input_index++)
+                {
+                    auto full_ptr = weights.connections.ptrs[0][input_index]+out_grad_ptrs[input_index];
+                    while(full_ptr<weights.connections.ptrs[0][input_index+1] && weights.connections.indices[0][full_ptr]<output_index){
+                        out_grad_ptrs[input_index]+=1;
+                        full_ptr = weights.connections.ptrs[0][input_index]+out_grad_ptrs[input_index];
+                    }
+                    if(weights.connections.indices[0][full_ptr]>output_index || full_ptr>=weights.connections.ptrs[0][input_index+1]){
+                        continue; // no synapse connection to this output, move to next input
+                    }
+                    auto weight_value = weights.connections.values[0][full_ptr];
+                    auto output_index = weights.connections.indices[0][full_ptr];
+                    //shouldn't need a parallel reduction, because the inputs are all accessed in parallel
+                    input_gradients[input_index] += weight_value * output_value;
                 }
             }
         }
     }
 }
+
+/*
+template <class SIZE_TYPE, class VALUE_TYPE>
+void sparse_linear_vectorized_backward_is(
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& in_tensor,  // this should be a fraction of active inputs for potentially making in*out new synapses
+    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE>& out_grad, // this should be a fraction of output gradients for potentially making in*out new synapses
+    VALUE_TYPE* input_gradients,
+    VALUE_TYPE* output_gradients, // this is the full gradient for computing the full input gradient
+    const int num_cpus)
+{
+    SIZE_TYPE batch_size = in_tensor.rows;
+    if (in_tensor.nnz() > 0 && out_grad.nnz() > 0) {
+        // Skip indices already in weight_tensor or merge potential weights into probes if they exist
+        weights.probes = generate_new_weights_csc(in_tensor, out_grad, num_cpus);
+    }
+
+    SIZE_TYPE num_inputs = weights.connections.rows;
+    SIZE_TYPE num_outputs = weights.connections.cols;
+
+    SIZE_TYPE total_inputs = num_inputs*batch_size;
+
+    #pragma omp parallel reduction(+:input_gradients[:total_inputs]) num_threads(num_cpus)
+    {
+        // Thread-private buffer for weight updates
+        std::vector<VALUE_TYPE> thread_input_gradients(in_tensor.cols, 0);
+
+        for (SIZE_TYPE batch = 0; batch < batch_size; batch++) {
+            // Reset thread-private weight updates for this batch (todo: move this to the parallel for)
+            std::fill(thread_input_gradients.begin(), thread_input_gradients.end(), 0);
+
+            #pragma omp for  // Parallelize across inputs
+            for (SIZE_TYPE input_ptr = in_tensor.ptrs[0][batch]; //NOTE: we are only learning for these specific inputs
+                 input_ptr < in_tensor.ptrs[0][batch + 1]; 
+                 input_ptr++) 
+            {
+                auto input_index = in_tensor.indices[0][input_ptr];
+                auto input_value = in_tensor.values[0][input_ptr];
+
+                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; 
+                     weight_ptr < weights.connections.ptrs[0][input_index + 1]; 
+                     weight_ptr++) 
+                {
+                    auto weight_value = weights.connections.values[0][weight_ptr];
+                    auto output_index = weights.connections.indices[0][weight_ptr];
+
+                    // Compute gradient contribution
+                    VALUE_TYPE grad_contribution = output_gradients[output_index * batch_size + batch] * weight_value;
+
+                    // Accumulate into thread-private buffer
+                    thread_input_gradients[input_index] += grad_contribution;
+
+                    // Store weight gradients
+                    weights.connections.values[1][weight_ptr] += 
+                        output_gradients[batch*weights.connections.rows +output_index] * input_value;
+                }
+            }
+
+            // Apply accumulated thread-local input updates
+            for (SIZE_TYPE i = batch * num_inputs; i < (batch+1) * num_inputs; i++) {
+                //don't use pragma omp atomic here either. reduction takes care of that: "reduction(+:output[:num_outputs])"
+                input_gradients[i] += thread_input_gradients[i-(batch * num_inputs)];
+            }
+        }
+    }
+}*/
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 void optim_weights(
