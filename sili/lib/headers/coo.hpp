@@ -1056,5 +1056,90 @@ void coo_subtract_bottom_k(INDEX_ARRAYS &indices, VALUE_ARRAYS &values,
     return 0;
 }*/
 
+template <typename VALUE_TYPE>
+std::vector<size_t> top_k_indices(VALUE_TYPE *values, size_t size, size_t k, int num_threads) {    
+    // Each thread processes a chunk of the array
+    size_t chunk_size = (size + num_threads - 1) / num_threads;
+    std::vector<std::vector<size_t>> thread_indices(num_threads);
+
+    if(k>size){
+        k=size;
+    }
+
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int thread_id = omp_get_thread_num();
+        size_t start = thread_id * chunk_size;
+        size_t end = std::min(start + chunk_size, size);
+
+        // Collect indices for this thread
+        std::vector<size_t> local_indices;
+        for (size_t i = start; i < end; ++i) {
+            local_indices.push_back(i);
+        }
+
+        // Sort local indices by values
+        std::partial_sort(local_indices.begin(), local_indices.begin() + std::min(k, local_indices.size()), local_indices.end(),
+                          [&values](size_t a, size_t b) { return values[a] > values[b]; });
+
+        // Keep only the smallest k elements
+        if (local_indices.size() > k) {
+            local_indices.resize(k);
+        }
+
+        thread_indices[thread_id] = std::move(local_indices);
+    }
+
+    // Merge results from all threads
+    std::vector<size_t> merged_indices;
+    for (const auto &indices : thread_indices) {
+        merged_indices.insert(merged_indices.end(), indices.begin(), indices.end());
+    }
+
+    // Find the global bottom-k indices
+    std::partial_sort(merged_indices.begin(), merged_indices.begin() + k, merged_indices.end(),
+                      [&values](size_t a, size_t b) { return values[a] > values[b]; });
+
+    merged_indices.resize(k);
+    return merged_indices;
+}
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+sparse_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>
+top_k_coo(VALUE_TYPE *values, size_t rows, size_t cols, size_t k, int num_threads) {
+    // Step 1: Get the top-k indices
+    std::vector<size_t> top_k = top_k_indices(values, rows * cols, k, num_threads);
+
+    // Step 2: Prepare space for row/column indices
+    std::unique_ptr<SIZE_TYPE[]> row_indices(new SIZE_TYPE[k]);
+    std::unique_ptr<SIZE_TYPE[]> col_indices(new SIZE_TYPE[k]);
+    std::unique_ptr<VALUE_TYPE[]> top_values(new VALUE_TYPE[k]);
+
+    // Step 3: Convert flat indices to row/column indices in parallel
+    #pragma omp parallel for num_threads(num_threads)
+    for (size_t i = 0; i < k; ++i) {
+        size_t flat_idx = top_k[i];
+        row_indices[i] = static_cast<SIZE_TYPE>(flat_idx / cols);
+        col_indices[i] = static_cast<SIZE_TYPE>(flat_idx % cols);
+        top_values[i] = values[flat_idx];
+    }
+
+    // Step 4: Create the COO sparse struct
+    COOPointers<SIZE_TYPE> ptrs = k; // Store nnz directly
+    COOIndices<SIZE_TYPE> indices{
+        std::move(row_indices),
+        std::move(col_indices)
+    };
+    UnaryValues<VALUE_TYPE> coo_values{
+        std::move(top_values)
+    };
+
+    sparse_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> coo_result(
+        ptrs, indices, coo_values, rows, cols, k);
+
+    return coo_result;
+}
+
+
 
 #endif

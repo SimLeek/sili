@@ -424,3 +424,125 @@ TEST_CASE("Sparse Linear Vectorized Backward IS", "[sparse_linear_vectorized_bac
 
 
 /* #endregion */
+
+TEST_CASE("Optimize Weights", "[optim_weights]") {
+    using SIZE_TYPE = int;
+    using VALUE_TYPE = float;
+
+    // SparseLinearWeights initialization
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> weights;
+    weights.connections.ptrs = {std::make_unique<SIZE_TYPE[]>(5)};
+    weights.connections.indices = {std::make_unique<SIZE_TYPE[]>(8)};
+    weights.connections.values = {std::make_unique<VALUE_TYPE[]>(8), std::make_unique<VALUE_TYPE[]>(8), std::make_unique<VALUE_TYPE[]>(8)};
+    weights.connections.rows = 4;
+    weights.connections.cols = 3;
+
+    SIZE_TYPE weights_ptrs_data[] = {0, 2, 4, 6, 8};
+    SIZE_TYPE weights_indices_data[] = {0, 1, 1, 2, 0, 2, 1, 2};
+    VALUE_TYPE weights_values_data[] = {0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.4, 0.5};
+    VALUE_TYPE gradients_data[] = {0.1, 0.2, -0.1, -0.2, 0.05, -0.05, 0.0, -0.1};
+    VALUE_TYPE connection_strength_data[] = {0.5, 0.2, 0.4, 0.6, 0.3, 0.2, 0.1, 0.4};
+
+    std::copy(weights_ptrs_data, weights_ptrs_data + 5, weights.connections.ptrs[0].get());
+    std::copy(weights_indices_data, weights_indices_data + 8, weights.connections.indices[0].get());
+    std::copy(weights_values_data, weights_values_data + 8, weights.connections.values[0].get());
+    std::copy(gradients_data, gradients_data + 8, weights.connections.values[1].get());
+    std::copy(connection_strength_data, connection_strength_data + 8, weights.connections.values[2].get());
+
+    VALUE_TYPE learning_rate = 0.01;
+    int num_cpus = 2;
+
+    // Expected updated weights
+    std::vector<VALUE_TYPE> expected_weights = {
+        0.299333, 0.398333, 0.500714, 0.60125, 0.699615, 0.800417, 0.4, 0.500714
+    };
+
+    optim_weights(weights, learning_rate, num_cpus);
+
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[0].get(),
+                                weights.connections.values[0].get() + 8),
+        expected_weights,
+        1e-6);
+}
+
+TEST_CASE("Optimize Synaptogenesis", "[optim_synaptogenesis]") {
+    using SIZE_TYPE = int;
+    using VALUE_TYPE = float;
+
+    // SparseLinearWeights initialization
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> weights;
+    weights.probes.ptrs = 3;
+    weights.probes.indices = {std::make_unique<SIZE_TYPE[]>(3), std::make_unique<SIZE_TYPE[]>(3)};
+    weights.probes.values = {std::make_unique<VALUE_TYPE[]>(3)};
+    weights.probes.rows = 4;
+    weights.probes.cols = 4;
+
+    weights.connections.ptrs = {std::make_unique<SIZE_TYPE[]>(5)};
+    weights.connections.indices = {std::make_unique<SIZE_TYPE[]>(8)};
+    weights.connections.values = {std::make_unique<VALUE_TYPE[]>(8), std::make_unique<VALUE_TYPE[]>(8), std::make_unique<VALUE_TYPE[]>(8)};
+    weights.connections.rows = 4;
+    weights.connections.cols = 4;
+
+
+    SIZE_TYPE probes_indices0_data[] = {0, 1, 3};
+    SIZE_TYPE probes_indices1_data[] = {2, 0, 2};
+    VALUE_TYPE probes_values_data[] = {0.001, 0.002, 0.009};
+
+    SIZE_TYPE weights_ptrs_data[] = {0, 2, 4, 6, 8};
+    SIZE_TYPE weights_indices_data[] = {0, 1, 1, 2, 0, 2, 1, 2};
+    VALUE_TYPE weights_values_data[] = {0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.4, 0.5};
+    VALUE_TYPE weights_backprop_data[] = {0, 0, 0, 0, 0, 0, 0, 0};
+    VALUE_TYPE weights_importance_data[] = {0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.4, 0.5};
+
+
+    std::copy(probes_indices0_data, probes_indices0_data + 3, weights.probes.indices[0].get());
+    std::copy(probes_indices1_data, probes_indices1_data + 3, weights.probes.indices[1].get());
+    std::copy(probes_values_data, probes_values_data + 3, weights.probes.values[0].get());
+
+    std::copy(weights_ptrs_data, weights_ptrs_data + 5, weights.connections.ptrs[0].get());
+    std::copy(weights_indices_data, weights_indices_data + 8, weights.connections.indices[0].get());
+    std::copy(weights_values_data, weights_values_data + 8, weights.connections.values[0].get());
+    std::copy(weights_backprop_data, weights_backprop_data + 8, weights.connections.values[1].get());
+    std::copy(weights_importance_data, weights_importance_data + 8, weights.connections.values[2].get());
+
+    VALUE_TYPE learning_rate = 0.01;
+    SIZE_TYPE max_weights = 10;
+    int num_cpus = 2;
+    VALUE_TYPE beta = 0.1;
+
+    optim_synaptogenesis(weights, learning_rate, max_weights, num_cpus, beta);
+
+    // Expected merged weights (assume a specific result after the operations)
+    std::vector<SIZE_TYPE> expected_weights_ptrs_data = {0, 3, 6, 8, 10};
+    std::vector<SIZE_TYPE> expected_weights_indices_data = {0, 1, 2, 0, 1, 2, 0, 2, 1, 2};
+    std::vector<VALUE_TYPE> expected_weights = { 0.3, 0.4, 0, 0, 0.5, 0.6, 0.7, 0.8, 0.4, 0.5};
+    std::vector<VALUE_TYPE> expected_backprop = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    // 0.5 at the end becomes 0.41 here because it had 0.5 importance subtracted 0.09 from it
+    std::vector<VALUE_TYPE> expected_importance = { 0.3, 0.4, -0.01, -0.02, 0.5, 0.6, 0.7, 0.8, 0.4, 0.41};
+
+    CHECK_VECTOR_EQUAL(
+        std::vector<SIZE_TYPE>(weights.connections.ptrs[0].get(),
+                                weights.connections.ptrs[0].get() + 5),
+        expected_weights_ptrs_data);
+
+    CHECK_VECTOR_EQUAL(
+        std::vector<SIZE_TYPE>(weights.connections.indices[0].get(),
+                                weights.connections.indices[0].get() + 10),
+        expected_weights_indices_data);
+
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[0].get(),
+                                weights.connections.values[0].get() + 10),
+        expected_weights);
+
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[1].get(),
+                                weights.connections.values[1].get() + 10),
+        expected_backprop);
+
+        CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[2].get(),
+                                weights.connections.values[2].get() + 10),
+        expected_importance);
+}

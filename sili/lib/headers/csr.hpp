@@ -7,6 +7,7 @@
 #include "unique_vector.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <ctime>
 #include <iterator>
 #include <omp.h>
@@ -162,7 +163,7 @@ sparse_struct<
     CSRPtrs<SIZE_TYPE>, // First SIZE_TYPE transformed to CSRPtrs
     ReducedArray<INDEX_ARRAYS>, // INDEX_ARRAYS reduced by one
     VALUE_ARRAYS
-> to_csr(
+>to_csr(
     sparse_struct<
         SIZE_TYPE,
         COOPointers<SIZE_TYPE>, // First SIZE_TYPE is unchanged here
@@ -176,8 +177,8 @@ sparse_struct<
     auto rows = a_coo.indices[0].get();
 
     // Parallel section to determine min_row and max_row for each thread
-    SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
-    SIZE_TYPE *thread_max_row = new SIZE_TYPE[num_cpus + 1];
+    /*SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
+    SIZE_TYPE *thread_max_row = new SIZE_TYPE[num_cpus];
 
     #pragma omp parallel num_threads(num_cpus)
     {
@@ -188,7 +189,7 @@ sparse_struct<
 
         thread_min_row[tid] = rows[start];
         thread_max_row[tid] = rows[end - 1] + 1;
-    }
+    }*/
 
     // Allocate accumulators for parallel histogram accumulation
     SIZE_TYPE *accum = new SIZE_TYPE[a_coo.rows]();
@@ -198,10 +199,8 @@ sparse_struct<
 
         #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
         {
-            int thread = omp_get_thread_num();
-            int my_first = thread * a_coo.rows;
-
             SIZE_TYPE tid = omp_get_thread_num();
+            int my_first = tid * a_coo.rows;
             SIZE_TYPE chunk_size = (nnz + num_cpus - 1) / num_cpus;
             SIZE_TYPE start = tid * chunk_size;
             SIZE_TYPE end = std::min(start + chunk_size, nnz);
@@ -209,6 +208,7 @@ sparse_struct<
             for (SIZE_TYPE i = start; i < end; i++) {
                 thr_accum[my_first + rows[i]]++;
             }
+            #pragma omp barrier
 
             #pragma omp for
             for (SIZE_TYPE r = 0; r < a_coo.rows; r++) {
@@ -303,6 +303,148 @@ void clear_coo(sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& csr) {
     csr.rows = 0;
     csr.cols = 0;
 }
+
+template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
+void clear_coo_view(sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& csr) {
+    // Set nnz to 0
+    csr.ptrs = 0;
+
+    // Clear indices array, no delete
+    for (auto& index : csr.indices) {
+        index.release();
+    }
+
+    // Clear values array, no delete
+    for (auto& value : csr.values) {
+        value.release();
+    }
+
+    // Set rows and columns to zero
+    csr.rows = 0;
+    csr.cols = 0;
+}
+
+template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS, int selection=-1>
+sparse_struct<
+    SIZE_TYPE, SIZE_TYPE,
+    INDEX_ARRAYS,
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>, 1>
+>
+view_reduce_coo_values(const sparse_struct<SIZE_TYPE, SIZE_TYPE, INDEX_ARRAYS, VALUE_ARRAYS>& a_coo) 
+{
+    constexpr int selectedIndex = (selection == -1) ? (num_indices<VALUE_ARRAYS> - 1) : selection;
+    constexpr size_t num_value_indices = num_indices<VALUE_ARRAYS>;
+    static_assert(selectedIndex >= 0 && selectedIndex < num_value_indices, "Invalid VALUE_INDEX specified.");
+    // Create a new COO sparse structure with a single value array
+    sparse_struct<
+    SIZE_TYPE, SIZE_TYPE,
+    INDEX_ARRAYS,
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>, 1>
+> reduced_coo;
+
+    // Set dimensions
+    reduced_coo.rows = a_coo.rows;
+    reduced_coo.cols = a_coo.cols;
+
+    // Move indices
+    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
+        reduced_coo.indices[idx].reset(a_coo.indices[idx + 1].get());
+    }
+
+    // Allocate and copy the first value array into the single value array
+    std::size_t nnz = a_coo.nnz(); // Number of non-zero elements
+    reduced_coo.values[0].reset(a_coo.values[selectedIndex].get());
+
+    return reduced_coo;
+}
+
+
+template <int... selections>
+struct expand {
+template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+static sparse_struct<
+    SIZE_TYPE, SIZE_TYPE,
+    INDEX_ARRAYS,
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>, sizeof...(selections)+num_indices<VALUE_ARRAYS>>
+>
+view_coo_values(const sparse_struct<SIZE_TYPE, SIZE_TYPE, INDEX_ARRAYS, VALUE_ARRAYS>& a_coo) 
+{
+    constexpr std::array<int, sizeof...(selections)> selection = {selections...};
+    constexpr size_t num_value_indices = num_indices<VALUE_ARRAYS>;
+    constexpr size_t num_selections = num_indices<decltype(selection)>;
+
+    // Create a new COO sparse structure with a single value array
+    sparse_struct<
+    SIZE_TYPE, SIZE_TYPE,
+    INDEX_ARRAYS,
+    std::array<std::unique_ptr<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>, sizeof...(selections)+num_indices<VALUE_ARRAYS>>
+> expanded_coo;
+
+    // Set dimensions
+    expanded_coo.rows = a_coo.rows;
+    expanded_coo.cols = a_coo.cols;
+    expanded_coo.ptrs = a_coo.ptrs; //copy nnz info over
+    std::size_t nnz = a_coo.nnz(); // shorthand
+
+    // Move indices
+    for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>; ++idx) {
+        expanded_coo.indices[idx].reset(a_coo.indices[idx].get());
+    }
+
+    int selections_used = 0;
+    for (std::size_t idx = 0; idx < num_value_indices + num_selections; ++idx) {
+        auto true_idx = idx - selections_used;
+        if(idx==selection[selections_used] || true_idx>num_value_indices){
+            expanded_coo.values[idx] = std::make_unique<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>(nnz);
+            std::fill(expanded_coo.values[idx].get(), expanded_coo.values[idx].get() + nnz, SIZE_TYPE(0));
+            selections_used++;
+        }else{
+            expanded_coo.values[idx].reset(a_coo.values[true_idx].get());
+        }
+    }
+
+    return expanded_coo;
+}
+
+template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
+static void free(sparse_struct<
+    SIZE_TYPE, SIZE_TYPE,
+    INDEX_ARRAYS,
+    VALUE_ARRAYS
+>& expanded_coo) {
+    constexpr std::array<int, sizeof...(selections)> selection = {selections...};
+    constexpr size_t num_value_indices = num_indices<VALUE_ARRAYS>;
+    constexpr size_t num_selections = num_indices<decltype(selection)>;
+    std::size_t nnz = expanded_coo.nnz(); // shorthand
+
+    // Set nnz to 0
+    expanded_coo.ptrs = 0;
+
+    // Clear indices array, no delete
+    for (auto& index : expanded_coo.indices) {
+        index.release();
+    }
+
+    // Clear values array, no delete
+    for (auto& value : expanded_coo.values) {
+        value.release();
+    }
+
+    int selections_used = 0;
+    for (std::size_t idx = 0; idx < num_value_indices; ++idx) {
+        if(idx==selection[selections_used]){
+            expanded_coo.values[idx].reset();
+            selections_used++;
+        }else{
+            expanded_coo.values[idx].release();
+        }
+    }
+
+    // Set rows and columns to zero
+    expanded_coo.rows = 0;
+    expanded_coo.cols = 0;
+}
+};
 
 // merges two CSRs
 /*template <typename SIZE_TYPE, typename VALUE_ARRAYS>

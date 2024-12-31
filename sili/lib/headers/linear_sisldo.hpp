@@ -1,6 +1,7 @@
 #include "csr.hpp"
 #include "coo.hpp"
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -356,26 +357,26 @@ void sparse_linear_vectorized_backward_is(
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 void optim_weights(
-    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     const VALUE_TYPE learning_rate,
     const int num_cpus,
     const VALUE_TYPE beta = 0.1 // rate for importance updates
 ) {
-#pragma omp parallel num_threads(num_cpus)
+#pragma omp parallel for num_threads(num_cpus)
 for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][0]; weight_ptr < weights.connections.ptrs[0][weights.connections.rows];
                      weight_ptr++)
                 {
                     auto weight_value = weights.connections.values[0][weight_ptr];
                     //weight += grad*-lr/(1+abs(conn_str))
                     weights.connections.values[0][weight_ptr] += (weights.connections.values[1][weight_ptr]*-learning_rate)/(1+std::abs(weights.connections.values[2][weight_ptr]));
-                     weights.connections.values[1][weight_ptr] = 0; // reset grad so we don't build it up.
+                    weights.connections.values[1][weight_ptr] = 0; // reset grad so we don't build it up.
                 }
 }
 
 //todo: split this up so different importance/optim handling types can be handled in python
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 void optim_synaptogenesis(
-    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
     const VALUE_TYPE learning_rate,
     const SIZE_TYPE max_weights,
     const int num_cpus,
@@ -383,15 +384,15 @@ void optim_synaptogenesis(
 ) {
 
     //STEP 1: convert probes sparse_struct type to connection sparse_struct type
-    VALUE_TYPE* importance_tensor = new VALUE_TYPE[weights.probes.nnz()];
-    #pragma omp parallel num_threads(num_cpus)
+    //VALUE_TYPE* importance_tensor = new VALUE_TYPE[weights.probes.nnz()];
+    #pragma omp parallel for num_threads(num_cpus)
     for (int weight_ptr = 0; weight_ptr < weights.probes.nnz(); weight_ptr++) {
         // weight_activation will always be zero since there was no weight yet, so just use 0-weight_error instead
         VALUE_TYPE weight_error = weights.probes.values[0][weight_ptr] / learning_rate;
         VALUE_TYPE weight_instant_importance = - weight_error;
 
         // Update importance tensor
-        importance_tensor[weight_ptr] = weight_instant_importance * beta;
+       weights.probes.values[0][weight_ptr] = weight_instant_importance * beta;
     }
 
     /*decltype(weights.connections) new_connections;
@@ -407,6 +408,7 @@ void optim_synaptogenesis(
 
     // STEP 2: Convert CSR to COO format
     auto coo_weights = to_coo(weights.connections, num_cpus);
+    auto probe_weights = expand<0,1>::view_coo_values(weights.probes);
     //auto coo_updates = to_coo(new_connections, num_cpus);
 
     // STEP 3: Allocate arrays for merged weights
@@ -414,40 +416,45 @@ void optim_synaptogenesis(
     // todo: pull this out into a "reserve COO for merging" function
     size_t merged_size = coo_weights.nnz() + weights.probes.nnz();
     decltype(coo_weights) merged_coo;
+    merged_coo.rows = weights.connections.rows;
+    merged_coo.cols = weights.connections.cols;
+
     using index_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.indices)>;
     using value_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.values)>;
 
     for (std::size_t idx = 0; idx < merged_coo.num_indices; ++idx) {
-        std::get<idx>(merged_coo.indices).reset(new index_type2[merged_size]);
+        merged_coo.indices[idx].reset(new index_type2[merged_size]);
     }
     for (std::size_t valIdx = 0; valIdx < merged_coo.num_values; ++valIdx) {
-        std::get<valIdx>(merged_coo.values).reset(new value_type2[merged_size]);
+        merged_coo.values[valIdx].reset(new value_type2[merged_size]);
     }
 
     // STEP 4: Merge weights
-    /* this does:
-     *   weight_importance = weight_importance * beta + gradient_importance
-     */
     size_t duplicates = parallel_merge_sorted_coos(
         coo_weights.indices, coo_weights.values, 
-        weights.probes.indices, weights.probes.values ,
+        probe_weights.indices, probe_weights.values ,
         merged_coo.indices, merged_coo.values, 
-        coo_weights.nnz(), weights.probes.nnz(),
+        coo_weights.nnz(), probe_weights.nnz(),
         num_cpus);
 
-    size_t new_nnz = coo_weights.nnz() + weights.probes.nnz() - duplicates;
+    size_t new_nnz = coo_weights.nnz() + probe_weights.nnz() - duplicates;
     merged_coo.ptrs = new_nnz;
+
+    expand<0,1>::free(probe_weights); // views require special handling for now
 
     // Check if pruning is required
     if (new_nnz > max_weights) {
         if(max_weights>weights.connections.nnz()){
             decltype(coo_weights) weight_out_container;
+            weight_out_container.rows = merged_coo.rows;
+            weight_out_container.cols = merged_coo.cols;
+            weight_out_container.ptrs = merged_coo.ptrs;
 
             for (std::size_t idx = 0; idx < weight_out_container.num_indices; ++idx) {
-                std::get<idx>(weight_out_container.indices).reset(new stdarr_of_uniqarr_type<decltype(weight_out_container.indices)>[max_weights]);
+                weight_out_container.indices[idx] = std::make_unique<SIZE_TYPE[]>(max_weights);
             }
             for (std::size_t valIdx = 0; valIdx < weight_out_container.num_values; ++valIdx) {
-                std::get<valIdx>(weight_out_container.values).reset(new stdarr_of_uniqarr_type<decltype(weight_out_container.values)>[max_weights]);
+                weight_out_container.values[valIdx] = std::make_unique<VALUE_TYPE[]>(max_weights);
             }
             coo_subtract_bottom_k(
             merged_coo.indices, merged_coo.values, 
