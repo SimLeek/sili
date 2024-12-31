@@ -34,13 +34,13 @@ template <typename INDEX_ARRAYS>
 using ReducedArray = typename ReduceArraySize<INDEX_ARRAYS>::type;
 
 /*template <class SIZE_TYPE, class VALUE_TYPE>
-csr_struct<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
+CSRInput<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
                                                      const sili::unique_vector<sili::unique_vector<VALUE_TYPE>> *values,
                                                      SIZE_TYPE num_col,
                                                      SIZE_TYPE num_row,
                                                      SIZE_TYPE numNonZero) {
     // Allocate memory for the CSR format
-    csr_struct<SIZE_TYPE, VALUE_TYPE> csr;
+    CSRInput<SIZE_TYPE, VALUE_TYPE> csr;
     csr.ptrs = std::make_unique<SIZE_TYPE[]>(num_col + 1);
     csr.indices = std::make_unique<SIZE_TYPE[]>(numNonZero);
 
@@ -101,7 +101,7 @@ sparse_struct<
     std::array<std::unique_ptr<stdarr_of_uniqarr_type<INDEX_ARRAYS>[]>, num_indices<INDEX_ARRAYS>+1 >,
     VALUE_ARRAYS
     > to_coo(
-        sparse_struct<SIZE_TYPE,CSRPointers<stdarr_of_uniqarr_type<INDEX_ARRAYS>>, INDEX_ARRAYS, VALUE_ARRAYS> &a_csr, 
+        sparse_struct<SIZE_TYPE,CSRPtrs<stdarr_of_uniqarr_type<INDEX_ARRAYS>>, INDEX_ARRAYS, VALUE_ARRAYS> &a_csr, 
         const int num_cpus)
 {
     SIZE_TYPE nnz = a_csr.nnz();
@@ -447,7 +447,7 @@ static void free(sparse_struct<
 };
 
 // merges two CSRs
-/*template <typename SIZE_TYPE, typename VALUE_ARRAYS>
+template <typename SIZE_TYPE, typename VALUE_ARRAYS>
 sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> merge_csrs(
     const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &a_csr,
     const sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARRAYS> &b_csr,
@@ -554,6 +554,8 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
             accum[ rows[i] ]++;
     }
 
+    #pragma omp barrier
+
     SIZE_TYPE *ptrs = new SIZE_TYPE[max_rows + 1];
     SIZE_TYPE scan_a = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)
@@ -567,7 +569,7 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     delete[] rows;
 
     // Return the new CSR matrix
-    csr_struct<SIZE_TYPE, VALUE_TYPE> return_csr;
+    CSRInput<SIZE_TYPE, VALUE_TYPE> return_csr;
     return_csr.rows = max_rows;
     return_csr.cols = max_cols;
     return_csr.ptrs.reset(ptrs);
@@ -577,9 +579,9 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     return return_csr;
 
     // duplicated code end
-}*/
+}
 
-/*template<class SIZE_TYPE>
+template<class SIZE_TYPE>
 inline int get_col(int ptr, int row_start_ptr, SIZE_TYPE* indices, int cols, int end){
         if(ptr<0){
             return -1;
@@ -592,9 +594,9 @@ inline int get_col(int ptr, int row_start_ptr, SIZE_TYPE* indices, int cols, int
 
 // generate random csr of points, taking in avoid_pts for cumulative random csr generation
 template <class SIZE_TYPE, class VALUE_TYPE>
-csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
+CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     SIZE_TYPE insertions,
-    const csr_struct<SIZE_TYPE, VALUE_TYPE> &csr_avoid_pts,
+    const CSRInput<SIZE_TYPE, VALUE_TYPE> &csr_avoid_pts,
     std::uniform_int_distribution<SIZE_TYPE> &index_dist, // should be from 0 to rows*cols
     std::mt19937_64 &generator,
     int num_cpus,
@@ -698,7 +700,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
                     remaining -= cols_elements;
                     break;
                 }*/
-            /*}
+            }
             SIZE_TYPE before_col = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
             cols[current_insertion] = before_col + remaining+1;
         }
@@ -716,7 +718,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     }*/
 
     // Build the ptrs array based on the sorted rows and cols/*
-    /*
+    
     SIZE_TYPE *accum = new SIZE_TYPE[csr_avoid_pts.rows];
     VALUE_TYPE *values = new VALUE_TYPE[insertions];
 
@@ -759,7 +761,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     delete[] rows;
 
     // Return the new CSR matrix
-    csr_struct<SIZE_TYPE, VALUE_TYPE> random_csr;
+    CSRInput<SIZE_TYPE, VALUE_TYPE> random_csr;
     random_csr.rows = csr_avoid_pts.rows;
     random_csr.cols = csr_avoid_pts.cols;
     random_csr.ptrs.reset(ptrs);
@@ -771,8 +773,8 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
 
 // determine optimal num cpus parameter if not given.
 template <class SIZE_TYPE, class VALUE_TYPE>
-csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
-                                                      const csr_struct<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
+CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
+                                                      const CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
                                                       std::uniform_int_distribution<SIZE_TYPE> &index_dist,
                                                       std::default_random_engine &generator) {
     // Upper bound on insertions
@@ -792,7 +794,7 @@ csr_struct<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
 
 // Helper method to remove an element from the CSR matrix
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-void remove_element_from_csr(SIZE_TYPE index, csr_struct<SIZE_TYPE, VALUE_TYPE> &csrMatrix) {
+void remove_element_from_csr(SIZE_TYPE index, CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix) {
     if (csrMatrix._reserved_indices_and_values < csrMatrix.nnz()) {
         csrMatrix._reserved_indices_and_values =
             csrMatrix.nnz(); // ensure this csr now contains the actual reserved size
@@ -815,7 +817,7 @@ void remove_element_from_csr(SIZE_TYPE index, csr_struct<SIZE_TYPE, VALUE_TYPE> 
 // Method to add a small number of elements to CSR array with bisection insertion
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 void add_few_random_to_csr(SIZE_TYPE insertions,
-                           csr_struct<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
+                           CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
                            std::uniform_int_distribution<SIZE_TYPE> &index_dist,
                            std::default_random_engine &generator) {
     // reserve needed space
@@ -911,14 +913,22 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
     std::uniform_int_distribution<SIZE_TYPE> index_dist;   // Distribution for random indices
 
   public:
-    csr_struct<SIZE_TYPE, VALUE_TYPE> csrMatrix;
+    CSRInput<SIZE_TYPE, VALUE_TYPE>& csrMatrix;
 
     // Constructor to initialize CSR matrix handler
-    CSRStarmap(csr_struct<SIZE_TYPE, VALUE_TYPE> &csr_matrix)
+    CSRStarmap(CSRInput<SIZE_TYPE, VALUE_TYPE> &csr_matrix)
         : csrMatrix(csr_matrix), generator(static_cast<unsigned>(std::time(0))), value_dist(0.0f, std::numbers::pi * 2),
           index_dist(0, csr_matrix.rows * csr_matrix.cols - 1) {
-        if (csrMatrix.ptrs == nullptr) {
-            csrMatrix.ptrs.reset(new SIZE_TYPE[csrMatrix.rows + 1]{});
+        if (csrMatrix.ptrs[0] == nullptr) {
+            csrMatrix.ptrs[0].reset(new SIZE_TYPE[csrMatrix.rows + 1]{});
+        }
+    }
+
+        CSRStarmap(CSRInput<SIZE_TYPE, VALUE_TYPE> &csr_matrix, unsigned gen_seed)
+        : csrMatrix(csr_matrix), generator(gen_seed), value_dist(0.0f, std::numbers::pi * 2),
+          index_dist(0, csr_matrix.rows * csr_matrix.cols - 1) {
+        if (csrMatrix.ptrs[0] == nullptr) {
+            csrMatrix.ptrs[0].reset(new SIZE_TYPE[csrMatrix.rows + 1]{});
         }
     }
 
@@ -931,8 +941,8 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
     void addRandomValue(VALUE_TYPE min = 0, VALUE_TYPE max = 2 * std::numbers::pi / 50000) {
         std::uniform_real_distribution<VALUE_TYPE> small_value_dist(min, max);
         for (SIZE_TYPE i = 0; i < csrMatrix.nnz(); ++i) {
-            csrMatrix.values[i] += small_value_dist(generator);
-            if (csrMatrix.values[i] > std::numbers::pi * 2) {
+            csrMatrix.values[0][i] += small_value_dist(generator);
+            if (csrMatrix.values[0][i] > std::numbers::pi * 2) {
                 remove_element_from_csr(i, csrMatrix);
             }
         }
@@ -945,12 +955,110 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
             add_few_random_to_csr(insertions, csrMatrix, index_dist, generator);
         }else{
             //cheaper to throw everything into a pile and re-sort
-            csr_struct<SIZE_TYPE, VALUE_TYPE> random_csr =
+            CSRInput<SIZE_TYPE, VALUE_TYPE> random_csr =
                 generate_random_csr(insertions, csrMatrix, index_dist, generator);
             csrMatrix = merge_csrs(csrMatrix, random_csr);
         }
     }
 };
-*/
+
 /* #endregion */
+
+//selects top k considering an additive bias. 
+//todo: Should there be a multiplicative bias though?
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+std::vector<size_t> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE> bias, size_t size, size_t k, int num_threads) {    
+    // Each thread processes a chunk of the array
+    size_t chunk_size = (size + num_threads - 1) / num_threads;
+    std::vector<std::vector<std::pair<SIZE_TYPE, VALUE_TYPE>>> thread_pairs(num_threads);
+
+    if(k>size){
+        k=size;
+    }
+
+    #pragma omp parallel num_threads(num_threads)
+    {
+        int thread_id = omp_get_thread_num();
+        size_t start = thread_id * chunk_size;
+        size_t end = std::min(start + chunk_size, size);
+
+        SIZE_TYPE csr_start = std::upper_bound(bias.ptrs[0].get(), bias.ptrs[0].get()+bias.rows, start);
+
+        // Collect indices for this thread
+        std::vector<std::pair<SIZE_TYPE, VALUE_TYPE>> local_pairs;
+        for (size_t i = start; i < end; ++i) {
+            if (bias.indices[csr_start] == i%bias.cols && bias.ptrs[csr_start+1]!=bias.ptrs[csr_start]) {
+                local_pairs.emplace_back(i, bias.values[csr_start] + values[i]);
+                ++csr_start;
+            }else{
+                local_pairs.emplace_back(i, values[i]);
+            }
+        }
+
+        // Sort local indices by values
+        std::partial_sort(local_pairs.begin(), local_pairs.begin() + std::min(k, local_pairs.size()), local_pairs.end(),
+                          [&local_pairs](size_t a, size_t b) { return local_pairs[a].second > local_pairs[b].second; });
+
+        // Keep only the smallest k elements
+        if (local_pairs.size() > k) {
+            local_pairs.resize(k);
+        }
+
+        thread_pairs[thread_id] = std::move(local_pairs);
+    }
+
+    // Merge results from all threads
+    std::vector<std::pair<SIZE_TYPE, VALUE_TYPE>> merged_pairs;
+    for (const auto &pairs : thread_pairs) {
+        merged_pairs.insert(merged_pairs.end(), pairs.begin(), pairs.end());
+    }
+
+    // Find the global bottom-k indices
+    std::partial_sort(merged_pairs.begin(), merged_pairs.begin() + k, merged_pairs.end(),
+                      [&values](size_t a, size_t b) { return values[a].second > values[b].second; });
+
+    merged_pairs.resize(k);
+    std::vector<SIZE_TYPE> indices;
+    for(const auto & pair : merged_pairs){
+        indices.push_back(pair.second);
+    }
+
+    return indices;
+}
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>
+top_k_csr_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE>& bias, size_t rows, size_t cols, size_t k, int num_threads) {
+    // Step 1: Get the top-k indices
+    std::vector<size_t> top_k = top_k_indices_biased(values, bias, rows * cols, k, num_threads);
+
+    // Step 2: Prepare space for row/column indices
+    std::unique_ptr<SIZE_TYPE[]> row_indices(new SIZE_TYPE[k]);
+    std::unique_ptr<SIZE_TYPE[]> col_indices(new SIZE_TYPE[k]);
+    std::unique_ptr<VALUE_TYPE[]> top_values(new VALUE_TYPE[k]);
+
+    // Step 3: Convert flat indices to row/column indices in parallel
+    #pragma omp parallel for num_threads(num_threads)
+    for (size_t i = 0; i < k; ++i) {
+        size_t flat_idx = top_k[i];
+        row_indices[i] = static_cast<SIZE_TYPE>(flat_idx / cols);
+        col_indices[i] = static_cast<SIZE_TYPE>(flat_idx % cols);
+        top_values[i] = values[flat_idx];
+    }
+
+    // Step 4: Create the COO sparse struct
+    COOPointers<SIZE_TYPE> ptrs = k; // Store nnz directly
+    COOIndices<SIZE_TYPE> indices{
+        std::move(row_indices),
+        std::move(col_indices)
+    };
+    UnaryValues<VALUE_TYPE> coo_values{
+        std::move(top_values)
+    };
+
+    sparse_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> coo_result(
+        ptrs, indices, coo_values, rows, cols, k);
+
+    return to_csr(coo_result, num_threads);
+}
 #endif

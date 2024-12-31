@@ -1,5 +1,8 @@
 #include "../sili/lib/headers/linear_sisldo.hpp"
+#include "csr.hpp"
+#include "sparse_struct.hpp"
 #include "tests_main.h"
+#include <cstddef>
 #include <vector>
 
 /* #region sparse_linear_csr_csc_forward */
@@ -545,4 +548,347 @@ TEST_CASE("Optimize Synaptogenesis", "[optim_synaptogenesis]") {
         std::vector<VALUE_TYPE>(weights.connections.values[2].get(),
                                 weights.connections.values[2].get() + 10),
         expected_importance);
+}
+
+/*TEST_CASE("train loop from zero", "[integration_train_loop]"){
+    using SIZE_TYPE = int;
+    using VALUE_TYPE = float;
+
+    // Input Tensor. Starts dense, always.
+    // since we're starting with 0, potentially from a previous array, we need a bias to provide indices instead
+    VALUE_TYPE input_values_data[] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    // this is where the starmap comes into play. It lets us tell neurons "you should have activated"
+    // it also slowly iterates which neurons should be trained or not using a sin function, which gives networks a sense of time
+    // it's meant for 2d biasing more, but idc enough to make it 1d since I plan on using this for real time learning. Open a pr if you want something else.
+    CSRInput<SIZE_TYPE, VALUE_TYPE> layer_input_train_bias_tensor;
+    layer_input_train_bias_tensor.rows = 2;  // 2 batches
+    layer_input_train_bias_tensor.cols = 4;  // 4 features
+    layer_input_train_bias_tensor.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    SIZE_TYPE layer_input_train_bias_ptrs_data[] = {0, 0, 0};
+    std::copy(layer_input_train_bias_ptrs_data, layer_input_train_bias_ptrs_data + 3, layer_input_train_bias_tensor.ptrs[0].get());
+
+    //todo: fix the random seed for the mt19937_64 generator and then test the starmap's csr
+    auto input_starmap = CSRStarmap(layer_input_train_bias_tensor);
+    input_starmap.iterate(4);
+
+    // Weights. Start with all zeros and add skip connections for a real test.
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> weights;
+    weights.connections.rows = 4;  // 4 input features
+    weights.connections.cols = 3;  // 3 output features
+    weights.connections.ptrs = {std::make_unique<SIZE_TYPE[]>(4)};
+    weights.connections.indices = {nullptr};
+    weights.connections.values = {
+        nullptr, nullptr, nullptr
+    };
+
+    auto input_portion = top_k_csr_biased(input_values_data, input_starmap.csrMatrix, 2, 4, 4, 4);
+
+    //todo: add input_portion assertions here
+
+    SIZE_TYPE weight_ptrs_data[] = {0, 0, 0, 0};
+
+    std::copy(weight_ptrs_data, weight_ptrs_data + 4, weights.connections.ptrs[0].get());
+
+    // Output
+    VALUE_TYPE output[6] = {0.0, 0.0, 0.0, 0, 0, 0};
+    VALUE_TYPE expected_output[] = {0.0, 0, 0, 0, 0, 0};
+
+    // Train flag
+    bool train = true;
+    VALUE_TYPE solidify = 0.01;
+
+    // Run forward pass
+    sparse_linear_csr_csc_forward(input_portion, weights, output, train, solidify);
+    // skip connections (does nothing since input was also zero)
+    // iterate min of input or output (3)
+    // todo: make a simple add function, or use numpy or something
+    for(int i=0;i<3;i++)
+        output[i] +=input_values_data[i];
+    for(int i=0;i<3;i++)
+        output[i+3] +=input_values_data[i+4];
+
+    // Verify output
+    CHECK_VECTOR_ALMOST_EQUAL(std::vector<VALUE_TYPE>(output, output + 6), std::vector<VALUE_TYPE>(expected_output, expected_output + 6));
+
+    // Verify importances updated
+    VALUE_TYPE expected_importances[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    CHECK_VECTOR_ALMOST_EQUAL(
+        std::vector<VALUE_TYPE>(weights.connections.values[2].get(), weights.connections.values[2].get() + 6),
+        std::vector<VALUE_TYPE>(expected_importances, expected_importances + 6)
+    );
+
+    //VALUE_TYPE desired_output[] = {1, 2, 3, 4, 5, 6};
+    //outputted 0s, so we backprop mean squared error, which is the jacobian of the MSE, or derivitive with respect to each prediction element
+    //(1/n)*sum_from_y=0 to y=n:((y_true-y_pred)^2) -> f_grad(y_pred):-2(y_true-y_pred)/n
+    VALUE_TYPE mse_output_grad[] = {-2./6, -4./6, -6./6, -8./6, -10./6, -12./6};
+
+    VALUE_TYPE in_grad[] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    //todo: use torch or something here. Test include only
+    for(int i=0;i<3;i++)
+        in_grad[i] +=mse_output_grad[i];
+    for(int i=0;i<3;i++)
+        in_grad[i+4] +=mse_output_grad[i+3];
+
+    CSRInput<SIZE_TYPE, VALUE_TYPE> layer_output_train_bias_tensor;
+    layer_output_train_bias_tensor.rows = 2;  // 2 batches
+    layer_output_train_bias_tensor.cols = 3;  // 4 features
+    layer_output_train_bias_tensor.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    SIZE_TYPE layer_output_train_bias_ptrs_data[] = {0, 0, 0};
+    std::copy(layer_input_train_bias_ptrs_data, layer_input_train_bias_ptrs_data + 3, layer_output_train_bias_tensor.ptrs[0].get());
+
+    //todo: fix the random seed for the mt19937_64 generator and then test the starmap's csr
+    auto output_starmap = CSRStarmap(layer_output_train_bias_tensor);
+    output_starmap.iterate(3);
+
+    auto output_grad_portion = top_k_csr_biased(mse_output_grad, output_starmap.csrMatrix, 2, 3, 3, 4);
+
+
+    sparse_linear_vectorized_backward_is(input_portion, weights, output_grad_portion, output_grad_portion,
+                                         in_grad, mse_output_grad, 4);
+
+    //todo: add assert vector (almost) equals here for weights.connections.values[1], weights.probes (should have some 0 importance weights), and in_grad
+    float learning_rate = 0.01;
+
+    optim_weights(weights, learning_rate, 4);
+
+    //todo: assert no change to weights because they don't exist yet
+
+    optim_synaptogenesis(weights, learning_rate, 6, 4);
+
+    //todo: assert that we have additional weights now
+}*/
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+void CHECK_CSR_WEIGHTS(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, TriValues<VALUE_TYPE>> &weights,
+                       const std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>> &expected_weights) {
+    // Extract actual weights from the sparse_struct
+    std::vector<SIZE_TYPE> actual_rows;
+    std::vector<SIZE_TYPE> actual_cols;
+    std::vector<VALUE_TYPE> actual_values1;
+    std::vector<VALUE_TYPE> actual_values2;
+    std::vector<VALUE_TYPE> actual_values3;
+
+    SIZE_TYPE rows = weights.rows;
+    auto &ptrs = weights.ptrs[0];
+    auto &indices = weights.indices[0];
+    auto &values1 = weights.values[0];
+    auto &values2 = weights.values[1];
+    auto &values3 = weights.values[2];
+
+    for (SIZE_TYPE i = 0; i < rows; ++i) {
+        for (SIZE_TYPE j = ptrs[i]; j < ptrs[i + 1]; ++j) {
+            actual_rows.push_back(i);
+            actual_cols.push_back(indices[j]);
+            actual_values1.push_back(values1[j]);
+            actual_values2.push_back(values2[j]);
+            actual_values3.push_back(values3[j]);
+        }
+    }
+
+    // Decompose expected weights into vectors
+    std::vector<SIZE_TYPE> expected_rows;
+    std::vector<SIZE_TYPE> expected_cols;
+    std::vector<VALUE_TYPE> expected_values1;
+    std::vector<VALUE_TYPE> expected_values2;
+    std::vector<VALUE_TYPE> expected_values3;
+
+    for (const auto &t : expected_weights) {
+        expected_rows.push_back(std::get<0>(t));
+        expected_cols.push_back(std::get<1>(t));
+        expected_values1.push_back(std::get<2>(t));
+        expected_values2.push_back(std::get<2>(t));
+        expected_values3.push_back(std::get<2>(t));
+    }
+
+    // Compare using CHECK_VECTOR_EQUAL and CHECK_VECTOR_ALMOST_EQUAL
+    CHECK_VECTOR_EQUAL(actual_rows, expected_rows);
+    CHECK_VECTOR_EQUAL(actual_cols, expected_cols);
+    CHECK_VECTOR_ALMOST_EQUAL(actual_values1, expected_values1);
+    CHECK_VECTOR_ALMOST_EQUAL(actual_values2, expected_values2);
+    CHECK_VECTOR_ALMOST_EQUAL(actual_values3, expected_values3);
+}
+
+template <class SIZE_TYPE, class VALUE_TYPE>
+void CHECK_CSR_VALUES(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> &weights,
+                       const std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>> &expected_weights) {
+    // Extract actual weights from the sparse_struct
+    std::vector<SIZE_TYPE> actual_rows;
+    std::vector<SIZE_TYPE> actual_cols;
+    std::vector<VALUE_TYPE> actual_values1;
+
+    SIZE_TYPE rows = weights.rows;
+    auto &ptrs = weights.ptrs[0];
+    auto &indices = weights.indices[0];
+    auto &values1 = weights.values[0];
+
+    for (SIZE_TYPE i = 0; i < rows; ++i) {
+        for (SIZE_TYPE j = ptrs[i]; j < ptrs[i + 1]; ++j) {
+            actual_rows.push_back(i);
+            actual_cols.push_back(indices[j]);
+            actual_values1.push_back(values1[j]);
+        }
+    }
+
+    // Decompose expected weights into vectors
+    std::vector<SIZE_TYPE> expected_rows;
+    std::vector<SIZE_TYPE> expected_cols;
+    std::vector<VALUE_TYPE> expected_values1;
+
+    for (const auto &t : expected_weights) {
+        expected_rows.push_back(std::get<0>(t));
+        expected_cols.push_back(std::get<1>(t));
+        expected_values1.push_back(std::get<2>(t));
+    }
+
+    // Compare using CHECK_VECTOR_EQUAL and CHECK_VECTOR_ALMOST_EQUAL
+    CHECK_VECTOR_EQUAL(actual_rows, expected_rows);
+    CHECK_VECTOR_EQUAL(actual_cols, expected_cols);
+    CHECK_VECTOR_ALMOST_EQUAL(actual_values1, expected_values1);
+}
+
+TEST_CASE("train loop from zero", "[integration_train_loop]") {
+    using SIZE_TYPE = int;
+    using VALUE_TYPE = float;
+
+    constexpr int num_iterations = 3;
+
+    // Input data for three iterations
+    std::vector<std::array<VALUE_TYPE, 8>> input_values_data({
+        {0, 0, 0, 0, 0, 0, 0, 0},
+        {.1, .1,.1 ,.1 ,.1 ,.1, .1, .1},
+        {.2, .2, .2, .2, .2, .2, .2, .2}
+    });
+
+    // Expected outputs per iteration
+    std::vector<std::vector<VALUE_TYPE>> expected_outputs = {
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    };
+
+        // Expected CSRs after input and output starmap iterations
+    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>>> expected_input_starmap_csrs = {
+        {{0, 0, 1.0}, {1, 1, 1.0}}, // After first iteration
+        {{0, 1, 0.8}, {1, 0, 0.2}}, // After second iteration
+        {{0, 0, 0.9}, {1, 1, 0.1}}  // After third iteration
+    };
+
+    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>>> expected_output_starmap_csrs = {
+        {{0, 0, 1.0}, {1, 2, 1.0}}, // After first iteration
+        {{0, 1, 0.7}, {1, 0, 0.3}}, // After second iteration
+        {{0, 2, 0.5}, {1, 1, 0.5}}  // After third iteration
+    };
+
+    // Expected weights after synaptogenesis for each iteration
+    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>>> expected_weights_after_synaptogenesis = {
+        {}, // Empty CSR
+        {{0, 1, 0.55, 0, 0}, {2, 0, 0.55, 0, 0}}, // After first iteration
+        {{0, 1, 0.65, 0, 0}, {2, 0, 0.65, 0, 0}, {3, 2, 0.35, 0, 0}} // After second iteration
+    };
+
+    // Set up starmaps for input and output before the loop
+    CSRInput<SIZE_TYPE, VALUE_TYPE> layer_input_train_bias_tensor;
+    layer_input_train_bias_tensor.rows = 2;
+    layer_input_train_bias_tensor.cols = 4;
+    layer_input_train_bias_tensor.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    SIZE_TYPE layer_input_train_bias_ptrs_data[] = {0, 0, 0};
+    std::copy(layer_input_train_bias_ptrs_data, layer_input_train_bias_ptrs_data + 3, layer_input_train_bias_tensor.ptrs[0].get());
+
+    auto input_starmap = CSRStarmap(layer_input_train_bias_tensor, 42);
+
+    CSRInput<SIZE_TYPE, VALUE_TYPE> layer_output_train_bias_tensor;
+    layer_output_train_bias_tensor.rows = 2;
+    layer_output_train_bias_tensor.cols = 3;
+    layer_output_train_bias_tensor.ptrs = {std::make_unique<SIZE_TYPE[]>(3)};
+    SIZE_TYPE layer_output_train_bias_ptrs_data[] = {0, 0, 0};
+    std::copy(layer_output_train_bias_ptrs_data, layer_output_train_bias_ptrs_data + 3, layer_output_train_bias_tensor.ptrs[0].get());
+
+    auto output_starmap = CSRStarmap(layer_output_train_bias_tensor, 42);
+
+    // Weights setup before the loop
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> weights;
+    weights.connections.rows = 4;
+    weights.connections.cols = 3;
+    weights.connections.ptrs = {std::make_unique<SIZE_TYPE[]>(4)};
+    weights.connections.indices = {nullptr};
+    weights.connections.values = {nullptr, nullptr, nullptr};
+    SIZE_TYPE weight_ptrs_data[] = {0, 0, 0, 0};
+    std::copy(weight_ptrs_data, weight_ptrs_data + 4, weights.connections.ptrs[0].get());
+
+    // Train flag and learning rate setup
+    bool train = true;
+    float learning_rate = 0.01;
+    float solidify = 0.01;
+
+    // Expected weights after each iteration
+    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>>> expected_weights = {
+        {},  // Empty CSR
+        {{0, 1, 0.5, 0, 0}, {2, 0, 0.5, 0, 0}},  // After first iteration
+        {{0, 1, 0.6, 0, 0}, {2, 0, 0.6, 0, 0}, {3, 2, 0.3, 0, 0}}  // After second iteration
+    };
+
+    for (int iter = 0; iter < num_iterations; ++iter) {
+        input_starmap.iterate(4);
+        output_starmap.iterate(3);
+
+        // Assert correctness of input and output starmap CSRs
+        CHECK_CSR_VALUES(input_starmap.csrMatrix, expected_input_starmap_csrs[iter]);
+        CHECK_CSR_VALUES(output_starmap.csrMatrix, expected_output_starmap_csrs[iter]);
+
+        auto input_portion = top_k_csr_biased(input_values_data[iter].data(), input_starmap.csrMatrix, 2, 4, 4, 4);
+
+        // Assert correctness of input_portion CSR
+        CHECK(input_portion.ptrs.size() == 5); // Number of rows + 1
+        CHECK(input_portion.indices.size() <= 4); // At most 4 non-zero entries
+        CHECK(input_portion.values.size() == input_portion.indices.size());
+
+        VALUE_TYPE output[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+        sparse_linear_csr_csc_forward(input_portion, weights, output, train, solidify);
+
+        // Skip connections
+        for (int i = 0; i < 3; i++) {
+            output[i] += input_values_data[iter][i];
+            output[i + 3] += input_values_data[iter][i + 4];
+        }
+
+        CHECK_VECTOR_ALMOST_EQUAL(std::vector<VALUE_TYPE>(output, output + 6), expected_outputs[iter]);
+
+        // Compute MSE jacobian
+        VALUE_TYPE desired_output[] = {1, 2, 3, 4, 5, 6};
+        VALUE_TYPE mse_output_grad[6];
+        for (int i = 0; i < 6; ++i) {
+            mse_output_grad[i] = -2.0 * (desired_output[i] - output[i]) / 6.0;
+        }
+
+        // Compute skip connection grad
+        VALUE_TYPE in_grad[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        for (int i = 0; i < 3; i++) {
+            in_grad[i] += mse_output_grad[i];
+            in_grad[i + 4] += mse_output_grad[i + 3];
+        }
+
+        auto output_grad_portion = top_k_csr_biased(mse_output_grad, output_starmap.csrMatrix, 2, 3, 3, 4);
+
+        CHECK_CSR_VALUES(output_grad_portion, expected_output_starmap_csrs[iter]);
+
+        sparse_linear_vectorized_backward_is(input_portion, weights, output_grad_portion, output_grad_portion,
+                                             in_grad, mse_output_grad, 4);
+
+        // Assert in_grad correctness
+        CHECK_VECTOR_ALMOST_EQUAL(std::vector<VALUE_TYPE>(in_grad, in_grad + 8),
+                                  std::vector<VALUE_TYPE>(expected_outputs[iter]));
+
+        optim_weights(weights, learning_rate, 4);
+
+        // Verify weights after optimization
+        CHECK_CSR_WEIGHTS(weights.connections, expected_weights[iter]);
+
+        optim_synaptogenesis(weights, learning_rate, 6, 4);
+
+        // Verify weights after synaptogenesis
+        CHECK_CSR_WEIGHTS(weights.connections, expected_weights_after_synaptogenesis[iter]);
+    }
 }
