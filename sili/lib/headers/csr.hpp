@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <iterator>
+#include <limits>
 #include <omp.h>
 #include <random>
 
@@ -461,14 +462,13 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     SIZE_TYPE max_cols = std::max(a_csr.cols, b_csr.cols);
 
     // Arrays for row and column positions
-    SIZE_TYPE *rows = new SIZE_TYPE[total_nnz];
-    SIZE_TYPE *cols = new SIZE_TYPE[total_nnz];
-    VALUE_ARRAYS vals;
+
+    using VALUE_TYPE = stdarr_of_uniqarr_type<VALUE_ARRAYS>;
+    std::array<std::unique_ptr<SIZE_TYPE[]>, 2> indices = {std::unique_ptr<SIZE_TYPE[]>(new SIZE_TYPE[total_nnz]), std::unique_ptr<SIZE_TYPE[]>(new SIZE_TYPE[total_nnz])};
+    std::array<std::unique_ptr<VALUE_TYPE[]>, num_indices<VALUE_ARRAYS>> values;
     
-    constexpr std::size_t numArrays = std::tuple_size<VALUE_ARRAYS>::value;
-    using VALUE_TYPE = VALUE_ARRAYS::value_type;
-    for (std::size_t i = 0; i < numArrays; ++i) {
-        vals[i] = std::unique_ptr<VALUE_TYPE[]>(new VALUE_TYPE[total_nnz]);
+    for (std::size_t i = 0; i < num_indices<VALUE_ARRAYS>; ++i) {
+        values[i] = std::unique_ptr<VALUE_TYPE[]>(new VALUE_TYPE[total_nnz]);
     }
 
     SIZE_TYPE duplicates;
@@ -489,36 +489,36 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
                 static_cast<std::ptrdiff_t>(0), 
                 std::upper_bound
                 (
-                    min_csr.ptrs.get(), 
-                    min_csr.ptrs.get() + min_csr.rows, start) - min_csr.ptrs.get()-1
+                    min_csr.ptrs[0].get(), 
+                    min_csr.ptrs[0].get() + min_csr.rows, start) - min_csr.ptrs[0].get()-1
                 )
             );
 
         SIZE_TYPE iter = start;
         while (iter < end_min) {
-            if (iter >= min_csr.ptrs[row + 1]) {
+            if (iter >= min_csr.ptrs[0][row + 1]) {
                 row++;
             }
-            rows[iter] = row;
-            cols[iter] = min_csr.indices[iter];
-            for (std::size_t i = 0; i < numArrays; ++i) {
-                vals[i][iter] = min_csr.values[i][iter];
+            indices[0][iter] = row;
+            indices[1][iter] = min_csr.indices[0][iter];
+            for (std::size_t i = 0; i < num_indices<VALUE_ARRAYS>; ++i) {
+                values[i][iter] = min_csr.values[i][iter];
             }
             iter++;
         }
 
         row = static_cast<SIZE_TYPE>(std::max(static_cast<std::ptrdiff_t>(0), 
-        std::upper_bound(max_csr.ptrs.get(), max_csr.ptrs.get() + max_csr.rows, start) - max_csr.ptrs.get()-1));
+        std::upper_bound(max_csr.ptrs[0].get(), max_csr.ptrs[0].get() + max_csr.rows, start) - max_csr.ptrs[0].get()-1));
 
         iter = start;
         while (iter < end_max) {
-            if (iter >= max_csr.ptrs[row + 1]) {
+            if (iter >= max_csr.ptrs[0][row + 1]) {
                 row++;
             }
-            rows[iter + min_csr.nnz()] = row;
-            cols[iter + min_csr.nnz()] = max_csr.indices[iter];
-            for (std::size_t i = 0; i < numArrays; ++i) {
-                vals[i][iter + min_csr.nnz()] = min_csr.values[i][iter];
+            indices[0][iter + min_csr.nnz()] = row;
+            indices[1][iter + min_csr.nnz()] = max_csr.indices[0][iter];
+            for (std::size_t i = 0; i < num_indices<VALUE_ARRAYS>; ++i) {
+                values[i][iter + min_csr.nnz()] = min_csr.values[i][iter];
             }
             iter++;
         }
@@ -526,7 +526,7 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
 #pragma omp barrier
 
         #pragma omp single
-        duplicates = recursive_merge_sort_coo(cols, rows, vals, (SIZE_TYPE)0, SIZE_TYPE(total_nnz - 1), (SIZE_TYPE)0);
+        duplicates = recursive_merge_sort_coo(indices, values, (SIZE_TYPE)0, SIZE_TYPE(total_nnz - 1), (SIZE_TYPE)0);
     }
 
     // duplicated code start: move this out
@@ -537,13 +537,13 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     if(num_cpus>1){
     SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus*(max_rows)];
     std::fill(thr_accum, thr_accum + max_rows*num_cpus, 0);
-    #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
+    #pragma omp parallel shared(accum, thr_accum, indices) num_threads(num_cpus)
   {
     int thread = omp_get_thread_num(),
       myfirst = thread*(max_rows);
     #pragma omp for
     for ( int i=0; i<total_nnz-duplicates; i++ )
-      thr_accum[ myfirst+rows[i] ]++;
+      thr_accum[ myfirst+indices[0][i] ]++;
     #pragma omp for
     for ( int igrp=0; igrp<(max_rows); igrp++ )
       for ( int t=0; t<num_cpus; t++ )
@@ -551,7 +551,7 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
   }
     }else{
         for ( int i=0; i<total_nnz-duplicates; i++ )
-            accum[ rows[i] ]++;
+            accum[ indices[0][i] ]++;
     }
 
     #pragma omp barrier
@@ -566,15 +566,17 @@ sparse_struct<SIZE_TYPE,CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, VALUE_ARR
     }
 
     delete[] accum;
-    delete[] rows;
+    indices[0].reset();
 
     // Return the new CSR matrix
     CSRInput<SIZE_TYPE, VALUE_TYPE> return_csr;
     return_csr.rows = max_rows;
     return_csr.cols = max_cols;
-    return_csr.ptrs.reset(ptrs);
-    return_csr.indices.reset(cols);
-    return_csr.values.reset(vals);
+    return_csr.ptrs[0].reset(ptrs);
+    return_csr.indices[0].reset(indices[1].release());
+    for (std::size_t i = 0; i < num_indices<VALUE_ARRAYS>; ++i) {
+        return_csr.values[i].reset(values[i].release());
+    }
 
     return return_csr;
 
@@ -655,10 +657,10 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
             int mid;
             while (low <= high) {
                 mid = (low + high) / 2;
-                SIZE_TYPE elements_before = csr_avoid_pts.cols * (mid-low) - (csr_avoid_pts.ptrs[mid] -
-                                                                      csr_avoid_pts.ptrs[low]);
-                SIZE_TYPE elements_at = csr_avoid_pts.cols - (csr_avoid_pts.ptrs[mid+1] -
-                                                                      csr_avoid_pts.ptrs[mid]);
+                SIZE_TYPE elements_before = csr_avoid_pts.cols * (mid-low) - (csr_avoid_pts.ptrs[0][mid] -
+                                                                      csr_avoid_pts.ptrs[0][low]);
+                SIZE_TYPE elements_at = csr_avoid_pts.cols - (csr_avoid_pts.ptrs[0][mid+1] -
+                                                                      csr_avoid_pts.ptrs[0][mid]);
 
                 if (elements_before+elements_at<= remaining) { // x is greater, ignore left half
                     low = mid+1;
@@ -676,15 +678,15 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
 
             // Now search within the found row to determine the column
             //FIX: you were searching between low to high indices. Should be searching 0 to max, and the ptrs are in between
-            SIZE_TYPE row_start_ptr = csr_avoid_pts.ptrs[rows[current_insertion]];
-            SIZE_TYPE end_ptr = csr_avoid_pts.ptrs[rows[current_insertion]+1];
+            SIZE_TYPE row_start_ptr = csr_avoid_pts.ptrs[0][rows[current_insertion]];
+            SIZE_TYPE end_ptr = csr_avoid_pts.ptrs[0][rows[current_insertion]+1];
             int low_ptr = -1,
                 high_ptr = end_ptr-row_start_ptr;
             SIZE_TYPE mid_ptr;
             while (low_ptr < high_ptr) {
                 mid_ptr = (low_ptr + high_ptr+1) / 2;
-                int col1 = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
-                int col2 = get_col(low_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
+                int col1 = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices[0].get(), csr_avoid_pts.cols, end_ptr);
+                int col2 = get_col(low_ptr, row_start_ptr, csr_avoid_pts.indices[0].get(), csr_avoid_pts.cols, end_ptr);
                 SIZE_TYPE cols_elements = (col1 - col2) - (mid_ptr - low_ptr); // Inverse of nnz so far
                 
                 if (remaining < cols_elements) {
@@ -701,7 +703,7 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
                     break;
                 }*/
             }
-            SIZE_TYPE before_col = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices.get(), csr_avoid_pts.cols, end_ptr);
+            SIZE_TYPE before_col = get_col(mid_ptr, row_start_ptr, csr_avoid_pts.indices[0].get(), csr_avoid_pts.cols, end_ptr);
             cols[current_insertion] = before_col + remaining+1;
         }
     }
@@ -764,8 +766,8 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(
     CSRInput<SIZE_TYPE, VALUE_TYPE> random_csr;
     random_csr.rows = csr_avoid_pts.rows;
     random_csr.cols = csr_avoid_pts.cols;
-    random_csr.ptrs.reset(ptrs);
-    random_csr.indices.reset(cols);
+    random_csr.ptrs[0].reset(ptrs);
+    random_csr.indices[0].reset(cols);
     // random_csr.values.reset(values);
 
     return random_csr;
@@ -776,7 +778,7 @@ template <class SIZE_TYPE, class VALUE_TYPE>
 CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
                                                       const CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
                                                       std::uniform_int_distribution<SIZE_TYPE> &index_dist,
-                                                      std::default_random_engine &generator) {
+                                                      std::mt19937_64 &generator) {
     // Upper bound on insertions
     SIZE_TYPE total_elements = csrMatrix.rows * csrMatrix.cols;
     SIZE_TYPE nnz = csrMatrix.nnz();
@@ -786,7 +788,7 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
         insertions = max_insertions;
     }
 
-    SIZE_TYPE optimal_cpus = std::min(omp_get_num_procs(), insertions / min_work_per_thread);
+    SIZE_TYPE optimal_cpus = std::min(omp_get_num_procs(), int(insertions / min_work_per_thread));
 
     // Call the original function with the optimized number of CPUs
     return generate_random_csr(insertions, csrMatrix, index_dist, generator, optimal_cpus);
@@ -795,21 +797,21 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> generate_random_csr(SIZE_TYPE insertions,
 // Helper method to remove an element from the CSR matrix
 template <typename SIZE_TYPE, typename VALUE_TYPE>
 void remove_element_from_csr(SIZE_TYPE index, CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix) {
-    if (csrMatrix._reserved_indices_and_values < csrMatrix.nnz()) {
-        csrMatrix._reserved_indices_and_values =
+    if (csrMatrix._reserved_space < csrMatrix.nnz()) {
+        csrMatrix._reserved_space =
             csrMatrix.nnz(); // ensure this csr now contains the actual reserved size
     }
     // properly erase a value in the csr
     std::move(
-        csrMatrix.values.get() + index + 1, csrMatrix.values.get() + csrMatrix.nnz(), csrMatrix.values.get() + index);
-    std::move(csrMatrix.indices.get() + index + 1,
-              csrMatrix.indices.get() + csrMatrix.nnz(),
-              csrMatrix.indices.get() + index);
+        csrMatrix.values[0].get() + index + 1, csrMatrix.values[0].get() + csrMatrix.nnz(), csrMatrix.values[0].get() + index);
+    std::move(csrMatrix.indices[0].get() + index + 1,
+              csrMatrix.indices[0].get() + csrMatrix.nnz(),
+              csrMatrix.indices[0].get() + index);
 
     // Update ptrs to reflect removal
     for (SIZE_TYPE i = 1; i < csrMatrix.rows + 1; ++i) {
-        if (csrMatrix.ptrs[i] > index) {
-            csrMatrix.ptrs[i]--;
+        if (csrMatrix.ptrs[0][i] > index) {
+            csrMatrix.ptrs[0][i]--;
         }
     }
 }
@@ -819,29 +821,29 @@ template <typename SIZE_TYPE, typename VALUE_TYPE>
 void add_few_random_to_csr(SIZE_TYPE insertions,
                            CSRInput<SIZE_TYPE, VALUE_TYPE> &csrMatrix,
                            std::uniform_int_distribution<SIZE_TYPE> &index_dist,
-                           std::default_random_engine &generator) {
+                           std::mt19937_64 &generator) {
     // reserve needed space
-    if (csrMatrix._reserved_indices_and_values < csrMatrix.nnz() + insertions) {
-        SIZE_TYPE *old_indices = csrMatrix.indices.get();
-        VALUE_TYPE *old_values = csrMatrix.values.get();
-        csrMatrix.indices.release();
-        csrMatrix.values.release();
+    if (csrMatrix._reserved_space < csrMatrix.nnz() + insertions) {
+        SIZE_TYPE *old_indices = csrMatrix.indices[0].get();
+        VALUE_TYPE *old_values = csrMatrix.values[0].get();
+        //csrMatrix.indices[0].release(); // causes memory leak, just reset
+        //csrMatrix.values[0].release();
 
         // Reserve enough space for the new insertions, doubling the current capacity
-        SIZE_TYPE new_capacity = std::max(csrMatrix._reserved_indices_and_values * 2, csrMatrix.nnz() + insertions);
-        csrMatrix.indices.reset(new SIZE_TYPE[new_capacity]);
-        csrMatrix.values.reset(new VALUE_TYPE[new_capacity]);
+        SIZE_TYPE new_capacity = std::max(csrMatrix._reserved_space * 2, csrMatrix.nnz() + insertions);
+        csrMatrix.indices[0].reset(new SIZE_TYPE[new_capacity]);
+        csrMatrix.values[0].reset(new VALUE_TYPE[new_capacity]);
 
         // Move existing data to the newly allocated arrays
-        std::move(old_indices, old_indices + csrMatrix.nnz(), csrMatrix.indices.get());
-        std::move(old_values, old_values + csrMatrix.nnz(), csrMatrix.values.get());
+        std::move(old_indices, old_indices + csrMatrix.nnz(), csrMatrix.indices[0].get());
+        std::move(old_values, old_values + csrMatrix.nnz(), csrMatrix.values[0].get());
 
         // Cleanup old arrays
         delete[] old_indices;
         delete[] old_values;
 
         // Update reserved space tracker
-        csrMatrix._reserved_indices_and_values = new_capacity;
+        csrMatrix._reserved_space = new_capacity;
     }
 
     for (SIZE_TYPE i = 0; i < insertions;
@@ -850,14 +852,14 @@ void add_few_random_to_csr(SIZE_TYPE insertions,
         SIZE_TYPE remaining_space = csrMatrix.cols * csrMatrix.rows - csrMatrix.nnz();
         SIZE_TYPE pos = random_index % (csrMatrix.nnz() + 1);
 
-        SIZE_TYPE insert_pos = std::distance(csrMatrix.indices.get(), csrMatrix.indices.get() + pos);
+        SIZE_TYPE insert_pos = std::distance(csrMatrix.indices[0].get(), csrMatrix.indices[0].get() + pos);
         SIZE_TYPE insert_row_max =
-            std::distance(csrMatrix.ptrs.get(),
-                          std::upper_bound(csrMatrix.ptrs.get(), csrMatrix.ptrs.get() + csrMatrix.rows, pos)) -
+            std::distance(csrMatrix.ptrs[0].get(),
+                          std::upper_bound(csrMatrix.ptrs[0].get(), csrMatrix.ptrs[0].get() + csrMatrix.rows, pos)) -
             1;
         SIZE_TYPE insert_row_min =
-            std::distance(csrMatrix.ptrs.get(),
-                          std::lower_bound(csrMatrix.ptrs.get(), csrMatrix.ptrs.get() + csrMatrix.rows, pos)) -
+            std::distance(csrMatrix.ptrs[0].get(),
+                          std::lower_bound(csrMatrix.ptrs[0].get(), csrMatrix.ptrs[0].get() + csrMatrix.rows, pos)) -
             1;
         SIZE_TYPE chosen_row;
         if (insert_row_max > insert_row_min) {
@@ -870,34 +872,34 @@ void add_few_random_to_csr(SIZE_TYPE insertions,
         }
 
         SIZE_TYPE index_before = 0;
-        if (pos != 0 && csrMatrix.ptrs[chosen_row] != pos) {
-            index_before = csrMatrix.indices[pos - 1];
+        if (pos != 0 && csrMatrix.ptrs[0][chosen_row] != pos) {
+            index_before = csrMatrix.indices[0][pos - 1];
         }
         SIZE_TYPE index_after = csrMatrix.cols;
-        if (pos != csrMatrix.nnz() && csrMatrix.ptrs[chosen_row + 1] != pos) {
-            index_after = csrMatrix.indices[pos];
+        if (pos != csrMatrix.nnz() && csrMatrix.ptrs[0][chosen_row + 1] != pos) {
+            index_after = csrMatrix.indices[0][pos];
         }
         if ((index_after - index_before <= 1) ||
             (pos == csrMatrix.nnz() && index_before == csrMatrix.cols &&
-             csrMatrix.ptrs[csrMatrix.rows] != csrMatrix.ptrs[csrMatrix.rows - 1])) {
+             csrMatrix.ptrs[0][csrMatrix.rows] != csrMatrix.ptrs[0][csrMatrix.rows - 1])) {
             // insertions++; may loop forever
             continue; // no space for current insertion point
         }
 
         std::move(
-            csrMatrix.values.get() + pos, csrMatrix.values.get() + csrMatrix.nnz(), csrMatrix.values.get() + pos + 1);
-        std::move(csrMatrix.indices.get() + pos,
-                  csrMatrix.indices.get() + csrMatrix.nnz(),
-                  csrMatrix.indices.get() + pos + 1);
+            csrMatrix.values[0].get() + pos, csrMatrix.values[0].get() + csrMatrix.nnz(), csrMatrix.values[0].get() + pos + 1);
+        std::move(csrMatrix.indices[0].get() + pos,
+                  csrMatrix.indices[0].get() + csrMatrix.nnz(),
+                  csrMatrix.indices[0].get() + pos + 1);
 
         random_index = index_dist(generator) % (index_after - index_before - 1) + index_before + 1;
 
-        csrMatrix.indices[pos] = random_index;
-        csrMatrix.values[pos] = 0;
+        csrMatrix.indices[0][pos] = random_index;
+        csrMatrix.values[0][pos] = 0;
 
         for (SIZE_TYPE i = chosen_row + 1; i < csrMatrix.rows + 1; ++i) {
             // if (csrMatrix.ptrs[i] > insert_pos) {
-            csrMatrix.ptrs[i]++;
+            csrMatrix.ptrs[0][i]++;
             //}
         }
     }
@@ -933,12 +935,12 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
     }
 
     void iterate(SIZE_TYPE nnz, VALUE_TYPE min = 0, VALUE_TYPE max = 2 * std::numbers::pi / 50000) {
-        addRandomValue(min, max);                 // add small floats to every value
         addRandomElements(nnz - csrMatrix.nnz()); // maintain exactly nnz values by inserting 0s
+        addRandomValue(min, max);                 // add small floats to every value
     }
 
     // Method to add a small random value to each CSR value
-    void addRandomValue(VALUE_TYPE min = 0, VALUE_TYPE max = 2 * std::numbers::pi / 50000) {
+    void addRandomValue(VALUE_TYPE min = std::numeric_limits<VALUE_TYPE>::epsilon, VALUE_TYPE max = 2 * std::numbers::pi / 50000) {
         std::uniform_real_distribution<VALUE_TYPE> small_value_dist(min, max);
         for (SIZE_TYPE i = 0; i < csrMatrix.nnz(); ++i) {
             csrMatrix.values[0][i] += small_value_dist(generator);
@@ -949,7 +951,7 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
     }
 
     // Method to add elements to CSR array with bisection insertion
-    void addRandomElements(SIZE_TYPE insertions) {
+    void addRandomElements(SIZE_TYPE insertions, int num_cpus=4) {
         if(insertions<20){
             //cheaper to shift to the right on every insert
             add_few_random_to_csr(insertions, csrMatrix, index_dist, generator);
@@ -957,7 +959,7 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
             //cheaper to throw everything into a pile and re-sort
             CSRInput<SIZE_TYPE, VALUE_TYPE> random_csr =
                 generate_random_csr(insertions, csrMatrix, index_dist, generator);
-            csrMatrix = merge_csrs(csrMatrix, random_csr);
+            csrMatrix = merge_csrs(csrMatrix, random_csr, num_cpus);
         }
     }
 };
@@ -967,7 +969,7 @@ template <class SIZE_TYPE, class VALUE_TYPE> class CSRStarmap {
 //selects top k considering an additive bias. 
 //todo: Should there be a multiplicative bias though?
 template <typename SIZE_TYPE, typename VALUE_TYPE>
-std::vector<size_t> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE> bias, size_t size, size_t k, int num_threads) {    
+std::vector<SIZE_TYPE> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE>& bias, size_t size, size_t k, int num_threads) {    
     // Each thread processes a chunk of the array
     size_t chunk_size = (size + num_threads - 1) / num_threads;
     std::vector<std::vector<std::pair<SIZE_TYPE, VALUE_TYPE>>> thread_pairs(num_threads);
@@ -979,17 +981,21 @@ std::vector<size_t> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,
     #pragma omp parallel num_threads(num_threads)
     {
         int thread_id = omp_get_thread_num();
-        size_t start = thread_id * chunk_size;
-        size_t end = std::min(start + chunk_size, size);
+        SIZE_TYPE start = thread_id * chunk_size;
+        SIZE_TYPE end = std::min(start + chunk_size, size);
 
-        SIZE_TYPE csr_start = std::upper_bound(bias.ptrs[0].get(), bias.ptrs[0].get()+bias.rows, start);
+        SIZE_TYPE bias_ptr = bias.ptrs[0][start/bias.cols];  // start at the correct row
 
         // Collect indices for this thread
         std::vector<std::pair<SIZE_TYPE, VALUE_TYPE>> local_pairs;
         for (size_t i = start; i < end; ++i) {
-            if (bias.indices[csr_start] == i%bias.cols && bias.ptrs[csr_start+1]!=bias.ptrs[csr_start]) {
-                local_pairs.emplace_back(i, bias.values[csr_start] + values[i]);
-                ++csr_start;
+            SIZE_TYPE bias_row = i/bias.cols;
+            while (bias.indices[0][bias_ptr] < i%bias.cols && bias_ptr<bias.ptrs[0][bias_row+1]) {
+                ++bias_ptr;
+            }
+            if (bias.indices[0][bias_ptr] == i%bias.cols && bias_ptr<=bias.ptrs[0][bias_row+1]) {
+                local_pairs.emplace_back(i, bias.values[0][bias_ptr] + values[i]);
+                ++bias_ptr;
             }else{
                 local_pairs.emplace_back(i, values[i]);
             }
@@ -997,7 +1003,7 @@ std::vector<size_t> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,
 
         // Sort local indices by values
         std::partial_sort(local_pairs.begin(), local_pairs.begin() + std::min(k, local_pairs.size()), local_pairs.end(),
-                          [&local_pairs](size_t a, size_t b) { return local_pairs[a].second > local_pairs[b].second; });
+                          [](std::pair<SIZE_TYPE, VALUE_TYPE>& a, std::pair<SIZE_TYPE, VALUE_TYPE>& b) { return a.second > b.second; });
 
         // Keep only the smallest k elements
         if (local_pairs.size() > k) {
@@ -1015,12 +1021,12 @@ std::vector<size_t> top_k_indices_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,
 
     // Find the global bottom-k indices
     std::partial_sort(merged_pairs.begin(), merged_pairs.begin() + k, merged_pairs.end(),
-                      [&values](size_t a, size_t b) { return values[a].second > values[b].second; });
+                      [](std::pair<SIZE_TYPE, VALUE_TYPE>& a, std::pair<SIZE_TYPE, VALUE_TYPE>& b) { return a.second > b.second; });
 
     merged_pairs.resize(k);
     std::vector<SIZE_TYPE> indices;
     for(const auto & pair : merged_pairs){
-        indices.push_back(pair.second);
+        indices.push_back(pair.first);
     }
 
     return indices;
@@ -1030,7 +1036,7 @@ template <class SIZE_TYPE, class VALUE_TYPE>
 sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>
 top_k_csr_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE>& bias, size_t rows, size_t cols, size_t k, int num_threads) {
     // Step 1: Get the top-k indices
-    std::vector<size_t> top_k = top_k_indices_biased(values, bias, rows * cols, k, num_threads);
+    std::vector<SIZE_TYPE> top_k = top_k_indices_biased(values, bias, rows * cols, k, num_threads);
 
     // Step 2: Prepare space for row/column indices
     std::unique_ptr<SIZE_TYPE[]> row_indices(new SIZE_TYPE[k]);
@@ -1055,6 +1061,8 @@ top_k_csr_biased(VALUE_TYPE *values, CSRInput<SIZE_TYPE,  VALUE_TYPE>& bias, siz
     UnaryValues<VALUE_TYPE> coo_values{
         std::move(top_values)
     };
+
+    merge_sort_coo(indices, coo_values, k);  //there better not be any duplicates. However, Todo: check there are no duplicates
 
     sparse_struct<SIZE_TYPE, COOPointers<SIZE_TYPE>, COOIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> coo_result(
         ptrs, indices, coo_values, rows, cols, k);

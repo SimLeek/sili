@@ -662,9 +662,9 @@ TEST_CASE("Optimize Synaptogenesis", "[optim_synaptogenesis]") {
 
 template <class SIZE_TYPE, class VALUE_TYPE>
 void CHECK_CSR_WEIGHTS(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, TriValues<VALUE_TYPE>> &weights,
-                       const std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>> &expected_weights) {
+                       const std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>> &expected_weights) {
     // Extract actual weights from the sparse_struct
-    std::vector<SIZE_TYPE> actual_rows;
+    std::vector<SIZE_TYPE> actual_ptrs;
     std::vector<SIZE_TYPE> actual_cols;
     std::vector<VALUE_TYPE> actual_values1;
     std::vector<VALUE_TYPE> actual_values2;
@@ -678,32 +678,41 @@ void CHECK_CSR_WEIGHTS(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CS
     auto &values3 = weights.values[2];
 
     for (SIZE_TYPE i = 0; i < rows; ++i) {
+        actual_ptrs.push_back(ptrs[i]);
         for (SIZE_TYPE j = ptrs[i]; j < ptrs[i + 1]; ++j) {
-            actual_rows.push_back(i);
             actual_cols.push_back(indices[j]);
             actual_values1.push_back(values1[j]);
             actual_values2.push_back(values2[j]);
             actual_values3.push_back(values3[j]);
         }
     }
+    actual_ptrs.push_back(ptrs[rows]);
 
     // Decompose expected weights into vectors
-    std::vector<SIZE_TYPE> expected_rows;
+    std::vector<SIZE_TYPE> expected_ptrs;
     std::vector<SIZE_TYPE> expected_cols;
     std::vector<VALUE_TYPE> expected_values1;
     std::vector<VALUE_TYPE> expected_values2;
     std::vector<VALUE_TYPE> expected_values3;
 
-    for (const auto &t : expected_weights) {
-        expected_rows.push_back(std::get<0>(t));
-        expected_cols.push_back(std::get<1>(t));
-        expected_values1.push_back(std::get<2>(t));
-        expected_values2.push_back(std::get<2>(t));
-        expected_values3.push_back(std::get<2>(t));
+    for (const auto &t : std::get<0>(expected_weights)) {
+        expected_ptrs.push_back(t);
+    }
+    for (const auto &t : std::get<1>(expected_weights)) {
+        expected_cols.push_back(t);
+    }
+    for (const auto &t : std::get<2>(expected_weights)) {
+        expected_values1.push_back(t);
+    }
+    for (const auto &t : std::get<3>(expected_weights)) {
+        expected_values2.push_back(t);
+    }
+    for (const auto &t : std::get<4>(expected_weights)) {
+        expected_values3.push_back(t);
     }
 
     // Compare using CHECK_VECTOR_EQUAL and CHECK_VECTOR_ALMOST_EQUAL
-    CHECK_VECTOR_EQUAL(actual_rows, expected_rows);
+    CHECK_VECTOR_EQUAL(actual_ptrs, expected_ptrs);
     CHECK_VECTOR_EQUAL(actual_cols, expected_cols);
     CHECK_VECTOR_ALMOST_EQUAL(actual_values1, expected_values1);
     CHECK_VECTOR_ALMOST_EQUAL(actual_values2, expected_values2);
@@ -712,9 +721,9 @@ void CHECK_CSR_WEIGHTS(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CS
 
 template <class SIZE_TYPE, class VALUE_TYPE>
 void CHECK_CSR_VALUES(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> &weights,
-                       const std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>> &expected_weights) {
+                       const std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>> &expected_weights) {
     // Extract actual weights from the sparse_struct
-    std::vector<SIZE_TYPE> actual_rows;
+    std::vector<SIZE_TYPE> actual_ptrs;
     std::vector<SIZE_TYPE> actual_cols;
     std::vector<VALUE_TYPE> actual_values1;
 
@@ -724,26 +733,31 @@ void CHECK_CSR_VALUES(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSR
     auto &values1 = weights.values[0];
 
     for (SIZE_TYPE i = 0; i < rows; ++i) {
+        actual_ptrs.push_back(ptrs[i]);
         for (SIZE_TYPE j = ptrs[i]; j < ptrs[i + 1]; ++j) {
-            actual_rows.push_back(i);
             actual_cols.push_back(indices[j]);
             actual_values1.push_back(values1[j]);
         }
     }
+    actual_ptrs.push_back(ptrs[rows]);
 
     // Decompose expected weights into vectors
-    std::vector<SIZE_TYPE> expected_rows;
+    std::vector<SIZE_TYPE> expected_ptrs;
     std::vector<SIZE_TYPE> expected_cols;
     std::vector<VALUE_TYPE> expected_values1;
 
-    for (const auto &t : expected_weights) {
-        expected_rows.push_back(std::get<0>(t));
-        expected_cols.push_back(std::get<1>(t));
-        expected_values1.push_back(std::get<2>(t));
+    for (const auto &t : std::get<0>(expected_weights)) {
+        expected_ptrs.push_back(t);
+    }
+    for (const auto &t : std::get<1>(expected_weights)) {
+        expected_cols.push_back(t);
+    }
+    for (const auto &t : std::get<2>(expected_weights)) {
+        expected_values1.push_back(t);
     }
 
     // Compare using CHECK_VECTOR_EQUAL and CHECK_VECTOR_ALMOST_EQUAL
-    CHECK_VECTOR_EQUAL(actual_rows, expected_rows);
+    CHECK_VECTOR_EQUAL(actual_ptrs, expected_ptrs);
     CHECK_VECTOR_EQUAL(actual_cols, expected_cols);
     CHECK_VECTOR_ALMOST_EQUAL(actual_values1, expected_values1);
 }
@@ -753,6 +767,19 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
     using VALUE_TYPE = float;
 
     constexpr int num_iterations = 3;
+
+    // Expected CSRs after input and output starmap iterations
+    std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_input_starmap_csrs = {
+        {{0, 3, 3}, {1, 2, 3}, {1.55606e-06, 6.58108e-05, 8.61137e-05}}, // After first iteration
+        {{0, 1}, {0}, {1.0}}, // After second iteration
+        {{0, 1}, {0}, {1.0}}  // After third iteration
+    };
+
+    std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_output_starmap_csrs = {
+        {{0, 1, 1}, {1}, {4.68585e-05}}, // After first iteration
+        {{0, 1}, {0}, {1.0}}, // After second iteration
+        {{0, 1}, {0}, {1.0}}  // After third iteration
+    };
 
     // Input data for three iterations
     std::vector<std::array<VALUE_TYPE, 8>> input_values_data({
@@ -768,24 +795,13 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
     };
 
-        // Expected CSRs after input and output starmap iterations
-    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>>> expected_input_starmap_csrs = {
-        {{0, 0, 1.0}, {1, 1, 1.0}}, // After first iteration
-        {{0, 1, 0.8}, {1, 0, 0.2}}, // After second iteration
-        {{0, 0, 0.9}, {1, 1, 0.1}}  // After third iteration
-    };
 
-    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE>>> expected_output_starmap_csrs = {
-        {{0, 0, 1.0}, {1, 2, 1.0}}, // After first iteration
-        {{0, 1, 0.7}, {1, 0, 0.3}}, // After second iteration
-        {{0, 2, 0.5}, {1, 1, 0.5}}  // After third iteration
-    };
 
     // Expected weights after synaptogenesis for each iteration
-    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>>> expected_weights_after_synaptogenesis = {
-        {}, // Empty CSR
-        {{0, 1, 0.55, 0, 0}, {2, 0, 0.55, 0, 0}}, // After first iteration
-        {{0, 1, 0.65, 0, 0}, {2, 0, 0.65, 0, 0}, {3, 2, 0.35, 0, 0}} // After second iteration
+    std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>>> expected_weights_after_synaptogenesis = {
+        {{0}, {0}, {0}, {0}, {0}}, // Empty CSR
+        {{0}, {0}, {0}, {0}, {0}},
+        {{0}, {0}, {0}, {0}, {0}}
     };
 
     // Set up starmaps for input and output before the loop
@@ -823,10 +839,10 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
     float solidify = 0.01;
 
     // Expected weights after each iteration
-    std::vector<std::vector<std::tuple<SIZE_TYPE, SIZE_TYPE, VALUE_TYPE, VALUE_TYPE, VALUE_TYPE>>> expected_weights = {
-        {},  // Empty CSR
-        {{0, 1, 0.5, 0, 0}, {2, 0, 0.5, 0, 0}},  // After first iteration
-        {{0, 1, 0.6, 0, 0}, {2, 0, 0.6, 0, 0}, {3, 2, 0.3, 0, 0}}  // After second iteration
+    std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>>> expected_weights = {
+        {{0}, {0}, {0}, {0}, {0}}, // Empty CSR
+        {{0}, {0}, {0}, {0}, {0}},
+        {{0}, {0}, {0}, {0}, {0}}
     };
 
     for (int iter = 0; iter < num_iterations; ++iter) {

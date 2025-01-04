@@ -1,6 +1,7 @@
 #ifndef __SPARSE_STRUCT_HPP_
 #define __SPARSE_STRUCT_HPP_
 
+#include "csr.hpp"
 #include <cstddef>
 #include <memory>
 
@@ -54,21 +55,21 @@ struct sparse_struct {
     SIZE_TYPE cols;
     SIZE_TYPE _reserved_space = 0;
 
-    static constexpr std::size_t num_indices = std::tuple_size<INDICES>::value;
-    static constexpr std::size_t num_values = std::tuple_size<VALUES>::value;
-    static constexpr std::size_t num_pointers = std::tuple_size<PTRS>::value;
+    static constexpr std::size_t n_index_arrays = num_indices<INDICES>;
+    static constexpr std::size_t n_value_arrays = num_indices<VALUES>;
+    static constexpr std::size_t n_pointer_arrays = num_indices<PTRS>;
 
     // Default constructor
     sparse_struct()
         : rows(0), cols(0), _reserved_space(0) {}
 
     // Constructor for pre-allocated arrays
-    sparse_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
+    sparse_struct(PTRS& p, INDICES& ind, VALUES& val, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
         : ptrs(std::move(p)), indices(std::move(ind)), values(std::move(val)),
           rows(num_p), cols(max_idx), _reserved_space(reserved) {}
 
     // Constructor without reserved size
-    sparse_struct(PTRS p, INDICES ind, VALUES val, SIZE_TYPE num_p, SIZE_TYPE max_idx)
+    sparse_struct(PTRS& p, INDICES& ind, VALUES& val, SIZE_TYPE num_p, SIZE_TYPE max_idx)
         : sparse_struct(std::move(p), std::move(ind), std::move(val), num_p, max_idx, 0) {}
 
     // Get the number of non-zeros
