@@ -1,5 +1,6 @@
 #include "csr.hpp"
 #include "coo.hpp"
+#include <cstddef>
 #include <cstdlib>
 #include <memory>
 #include <new>
@@ -25,6 +26,10 @@ void sparse_linear_csr_csc_forward(
     const int num_cpus=4 // usually good default even in the case of many more cpus
 ){
     SIZE_TYPE num_outputs = input_tensor.rows * weights.connections.cols;
+
+    if(weights.connections.values[0]==nullptr){
+        return; // output is 0 due to lack of connections, and it should already be set to 0 anyway.
+    }
 
     #pragma omp parallel reduction(+:output[:num_outputs]) num_threads(num_cpus)
     {
@@ -236,6 +241,10 @@ void sparse_linear_vectorized_backward_is(
         //todo: need to keep only the important value arrays for this and drop the others. Make a view op for it
         weights.probes = generate_new_weights_csc(in_tensor, out_grad_synaptogenesis, num_cpus);
     }
+    if(weights.connections.values[0]==nullptr){
+        return; // grad input is unchanged because of no connections, and there are no connections to add gradients to
+    }
+
 //todo: use a vector of pointers to keep the output ptr
     std::vector<SIZE_TYPE> out_grad_ptrs(weights.connections.rows, 0);
 
@@ -276,8 +285,14 @@ void sparse_linear_vectorized_backward_is(
                         out_grad_ptrs[input_index]+=1;
                         full_ptr = weights.connections.ptrs[0][input_index]+out_grad_ptrs[input_index];
                     }
-                    if(weights.connections.indices[0][full_ptr]>output_index || full_ptr>=weights.connections.ptrs[0][input_index+1]){
-                        continue; // no synapse connection to this output, move to next input
+                    if(weights.connections.indices[0].get()!=nullptr && weights.connections.ptrs[0].get()!=nullptr){ //nullptr handles uninitialized weights
+                        if( weights.connections.indices[0][full_ptr]>output_index || 
+                            full_ptr>=weights.connections.ptrs[0][input_index+1]
+                        ){
+                            continue; // no synapse connection to this output, move to next input
+                        }
+                    }else{
+                        continue; // no synapse connections at all... but we're in an openmp for loop, so we have to continue and not break
                     }
                     auto weight_value = weights.connections.values[0][full_ptr];
                     //auto output_index = weights.connections.indices[0][full_ptr];
@@ -362,6 +377,9 @@ void optim_weights(
     const int num_cpus,
     const VALUE_TYPE beta = 0.1 // rate for importance updates
 ) {
+    if(weights.connections.values[0]==nullptr){
+        return; // no weights to optimize
+    }
 #pragma omp parallel for num_threads(num_cpus)
 for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][0]; weight_ptr < weights.connections.ptrs[0][weights.connections.rows];
                      weight_ptr++)
@@ -415,6 +433,26 @@ void optim_synaptogenesis(
     // note: certain architectures may prefer the slower nlogn method due to closer memory
     // todo: pull this out into a "reserve COO for merging" function
     size_t merged_size = coo_weights.nnz() + weights.probes.nnz();
+    
+    // STEP 4: Merge weights (assuming sorted)
+    size_t duplicates=0;
+    if(probe_weights.ptrs!=0 &&coo_weights.ptrs==0){
+        weights.connections = to_csr(probe_weights, num_cpus);
+        weights.probes.indices[0].release(); // free'd by the to_csr conversion, so ignore it from now on
+        weights.probes.indices[1].release(); // controlled by weights.connetions now, so ignore it
+        weights.probes.values[0].release(); // also controlled by weights.connections
+        probe_weights.values[0].release(); //same here...
+        probe_weights.values[1].release();
+        probe_weights.values[2].release();
+        //expand<0,1>::free(probe_weights);
+        //clear_coo(weights.probes);
+        return;
+    }else if(coo_weights.ptrs!=0 &&probe_weights.ptrs==0){
+        weights.connections = to_csr(coo_weights, num_cpus);
+        return;
+    }else if(coo_weights.ptrs==0 &&probe_weights.ptrs==0){
+        return;
+    }
     decltype(coo_weights) merged_coo;
     merged_coo.rows = weights.connections.rows;
     merged_coo.cols = weights.connections.cols;
@@ -422,20 +460,19 @@ void optim_synaptogenesis(
     using index_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.indices)>;
     using value_type2 = stdarr_of_uniqarr_type<decltype(merged_coo.values)>;
 
-    for (std::size_t idx = 0; idx < merged_coo.num_indices; ++idx) {
+    for (std::size_t idx = 0; idx < merged_coo.n_index_arrays; ++idx) {
         merged_coo.indices[idx].reset(new index_type2[merged_size]);
     }
-    for (std::size_t valIdx = 0; valIdx < merged_coo.num_values; ++valIdx) {
+    for (std::size_t valIdx = 0; valIdx < merged_coo.n_value_arrays; ++valIdx) {
         merged_coo.values[valIdx].reset(new value_type2[merged_size]);
     }
+    duplicates = parallel_merge_sorted_coos(
+    coo_weights.indices, coo_weights.values, 
+    probe_weights.indices, probe_weights.values ,
+    merged_coo.indices, merged_coo.values, 
+    coo_weights.nnz(), probe_weights.nnz(),
+    num_cpus);
 
-    // STEP 4: Merge weights
-    size_t duplicates = parallel_merge_sorted_coos(
-        coo_weights.indices, coo_weights.values, 
-        probe_weights.indices, probe_weights.values ,
-        merged_coo.indices, merged_coo.values, 
-        coo_weights.nnz(), probe_weights.nnz(),
-        num_cpus);
 
     size_t new_nnz = coo_weights.nnz() + probe_weights.nnz() - duplicates;
     merged_coo.ptrs = new_nnz;
@@ -450,10 +487,10 @@ void optim_synaptogenesis(
             weight_out_container.cols = merged_coo.cols;
             weight_out_container.ptrs = merged_coo.ptrs;
 
-            for (std::size_t idx = 0; idx < weight_out_container.num_indices; ++idx) {
+            for (std::size_t idx = 0; idx < weight_out_container.n_index_arrays; ++idx) {
                 weight_out_container.indices[idx] = std::make_unique<SIZE_TYPE[]>(max_weights);
             }
-            for (std::size_t valIdx = 0; valIdx < weight_out_container.num_values; ++valIdx) {
+            for (std::size_t valIdx = 0; valIdx < weight_out_container.n_value_arrays; ++valIdx) {
                 weight_out_container.values[valIdx] = std::make_unique<VALUE_TYPE[]>(max_weights);
             }
             coo_subtract_bottom_k(

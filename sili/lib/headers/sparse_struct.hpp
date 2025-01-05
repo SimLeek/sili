@@ -1,7 +1,6 @@
 #ifndef __SPARSE_STRUCT_HPP_
 #define __SPARSE_STRUCT_HPP_
 
-#include "csr.hpp"
 #include <cstddef>
 #include <memory>
 
@@ -44,6 +43,9 @@ using QuadValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 4>;
 
 template <class VALUE_TYPE>
 using PentaValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 5>;
+
+template <typename INDEX_ARRAYS>
+constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
 
 // CSR Struct with sub-templates
 template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>

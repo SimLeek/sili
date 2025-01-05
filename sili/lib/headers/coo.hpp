@@ -802,7 +802,7 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
     fullScanValues(duplicates_per_thread, scanned_duplicates);
 
     // step 1.6: shift the chunks
-    #pragma omp parallel num_threads(num_threads)
+    #pragma omp parallel num_threads(num_threads) shared(scanned_duplicates)
     {
         int thread_id = omp_get_thread_num();
         size_t chunk_size = (m_size + num_threads - 1) / num_threads;
@@ -827,7 +827,7 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
     }
 
     // Step 2: Copy remaining elements from n to c
-    #pragma omp parallel num_threads(num_threads)
+    #pragma omp parallel num_threads(num_threads) shared(scanned_duplicates)
     {
         int thread_id = omp_get_thread_num();
         size_t chunk_size = (n_begins[0] + num_threads - 1) / num_threads;

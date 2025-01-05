@@ -91,8 +91,7 @@ using stdarr_of_uniqarr_type = typename std::remove_extent<
     >::type
 >::type;
 
-template <typename INDEX_ARRAYS>
-constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
+
 
 //warning: the original csr also has the same pointers after this operation.
 template <typename SIZE_TYPE, typename INDEX_ARRAYS, typename VALUE_ARRAYS>
@@ -175,7 +174,28 @@ sparse_struct<
 {
     SIZE_TYPE nnz = a_coo.ptrs;
     SIZE_TYPE num_rows = a_coo.rows;
-    auto rows = a_coo.indices[0].get();
+    //auto rows = a_coo.indices[0].release();
+
+    if(a_coo.indices[0].get()==nullptr){
+        sparse_struct<
+        SIZE_TYPE,
+        CSRPtrs<SIZE_TYPE>, // First SIZE_TYPE transformed to CSRPtrs
+        ReducedArray<INDEX_ARRAYS>, // INDEX_ARRAYS reduced by one
+        VALUE_ARRAYS
+        > csr;
+
+        csr.rows = num_rows;
+        csr.cols = a_coo.cols;
+        csr.ptrs[0].reset(new SIZE_TYPE[num_rows + 1]{0});
+        for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>-1; ++idx) {
+            csr.indices[idx].reset(nullptr);
+        }
+        for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
+            csr.values[valIdx].reset(nullptr);
+        }
+
+        return csr;
+    }
 
     // Parallel section to determine min_row and max_row for each thread
     /*SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
@@ -198,7 +218,7 @@ sparse_struct<
         SIZE_TYPE *thr_accum = new SIZE_TYPE[num_cpus * a_coo.rows];
         std::fill(thr_accum, thr_accum + num_cpus * a_coo.rows, 0);
 
-        #pragma omp parallel shared(accum, thr_accum, rows) num_threads(num_cpus)
+        #pragma omp parallel shared(accum, thr_accum, a_coo) num_threads(num_cpus)
         {
             SIZE_TYPE tid = omp_get_thread_num();
             int my_first = tid * a_coo.rows;
@@ -207,7 +227,7 @@ sparse_struct<
             SIZE_TYPE end = std::min(start + chunk_size, nnz);
 
             for (SIZE_TYPE i = start; i < end; i++) {
-                thr_accum[my_first + rows[i]]++;
+                thr_accum[my_first + a_coo.indices[0].get()[i]]++;
             }
             #pragma omp barrier
 
@@ -222,7 +242,7 @@ sparse_struct<
         delete[] thr_accum;
     } else {
         for (SIZE_TYPE i = 0; i < nnz; i++) {
-            accum[rows[i]]++;
+            accum[a_coo.indices[0].get()[i]]++;
         }
     }
 
@@ -240,7 +260,7 @@ sparse_struct<
     }
 
     delete[] accum;
-
+    a_coo.indices[0].reset();
     // Create and return the CSR sparse structure
     sparse_struct<
     SIZE_TYPE,
@@ -249,15 +269,20 @@ sparse_struct<
     VALUE_ARRAYS
     > csr;
 
+    a_coo.ptrs = 0;
+
     csr.rows = num_rows;
     csr.cols = a_coo.cols;
     csr.ptrs[0].reset(ptrs);
     //std::get<0>(csr.indices).reset(std::get<1>(a_coo.indices).release());
+    a_coo.indices[0].reset();
     for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>-1; ++idx) {
         csr.indices[idx].reset(a_coo.indices[idx+1].release());
+        a_coo.indices[idx+1].reset();
     }
     for (std::size_t valIdx = 0; valIdx < num_indices<VALUE_ARRAYS>; ++valIdx) {
         csr.values[valIdx].reset(a_coo.values[valIdx].release());
+        a_coo.values[valIdx].reset();
     }
 
     return csr;
