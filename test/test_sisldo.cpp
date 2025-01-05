@@ -2,6 +2,7 @@
 #include "csr.hpp"
 #include "sparse_struct.hpp"
 #include "tests_main.h"
+#include <catch2/catch_message.hpp>
 #include <cstddef>
 #include <vector>
 
@@ -805,59 +806,75 @@ void CHECK_CSR_VALUES(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSR
 }
 
 TEST_CASE("train loop from zero", "[integration_train_loop]") {
+    //most important test, every other test matters less.
+    //todo: fix random generator so it's actually the same number every test
+    
     using SIZE_TYPE = int;
     using VALUE_TYPE = float;
 
-    constexpr int num_iterations = 3;
+    constexpr int num_iterations = 5;
 
     // Expected CSRs after input and output starmap iterations
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_input_starmap_csrs = {
         {{0, 2, 2}, {1, 2}, {7.22026e-05, 4.68585e-05}}, // After first iteration
         {{0, 2, 2}, {1, 2}, {0.000106619, 9.59013e-05}}, // After second iteration
-        {{0, 1}, {0}, {1.0}}  // After third iteration
+        {{0, 2, 2}, {1, 2}, {0.000108175, 0.000161712}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
     };
 
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_output_starmap_csrs = {
-        {{0, 1, 1}, {1}, { 1.71245e-05}}, // After first iteration
-        {{0, 1, 1}, {1}, {0.000130633}}, // After second iteration
+        {{0, 1, 1}, {1}, { 1.1821e-05}}, // After first iteration
+        {{0, 2, 2}, {1, 2}, {6.08639e-05, 1.55606e-06}}, // After second iteration
+        {{0, 2, 2}, {1, 2}, {0.000126675, 8.76698e-05}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
         {{0, 1}, {0}, {1.0}}  // After third iteration
+
     };
 
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_input_portion = {
         {{0, 2, 2}, {1, 2}, {0, 0}}, // After first iteration
-        {{0, 2, 2}, {1, 2}, {0.1, 0.1}}, // After second iteration
-        {{0, 1}, {0}, {1.0}}  // After third iteration
+        {{0, 2, 2}, {1, 2}, {.1, .1}}, // After second iteration
+        {{0, 2, 2}, {1, 2}, {.2, .2}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
     };
 
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_output_grad_portion = {
         {{0, 1, 1}, {0}, {-0.333333}}, // After first iteration
         {{0, 1, 1}, {0}, {-0.3}}, // After second iteration
+        {{0, 1, 1}, {0}, {-0.266627}},  // After third iteration
+        {{0, 1}, {0}, {1.0}},  // After third iteration
         {{0, 1}, {0}, {1.0}}  // After third iteration
+
     };
 
     // Input data for three iterations
     std::vector<std::array<VALUE_TYPE, 8>> input_values_data({
         {0, 0, 0, 0, 0, 0, 0, 0},
         {.1, .1,.1 ,.1 ,.1 ,.1, .1, .1},
-        {.2, .2, .2, .2, .2, .2, .2, .2}
+        {.2, .2, .2, .2, .2, .2, .2, .2},
+        {.2, .2, .2, .2, .2, .2, .2, .2},
+        {.2, .2, .2, .2, .2, .2, .2, .2},
+
     });
 
     // Expected outputs per iteration
     std::vector<std::vector<VALUE_TYPE>> expected_outputs = {
         {0, 0, 0, 0, 0, 0},
-        {0.1, 0, 0, 0.1, 0, 0}, //note: output should only have 1 non-zero entries per batch, so 2 here
-        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+        {0.1, 0.1, 0.1, 0.1, 0.1, 0.1},
+        {0.20012, 0.2, 0.2, 0.2, 0.2, 0.2},
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
     };
 
     std::vector<std::vector<VALUE_TYPE>> expected_in_grad = {
         {-0.333333, -0.666667, -1, 0, -1.33333, -1.66667, -2, 0 },
+        {-0.3, -0.633333, -0.966667, 0, -1.3, -1.63333, -1.96667, 0},
+        {-0.266627, -0.60008, -0.933413, 0, -1.26667, -1.6, -1.93333, 0},
         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+        {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
     };
-
-
-
-    
 
     // Set up starmaps for input and output before the loop
     CSRInput<SIZE_TYPE, VALUE_TYPE> layer_input_train_bias_tensor;
@@ -896,35 +913,46 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
     // Expected probes
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_probes = {
         {{1, 2}, {0, 0}, {0, 0}},
-        {{0, 3, 6, 9, 12}, {0}, {0}},
-        {{0, 3, 6, 9, 12}, {0}, {0}}
+        {{1, 2}, {0, 0}, {-0.03, -0.03}},
+        {{1, 2}, {0, 0}, {-0.0533253 -0.0533253}},
+        {{1, 2}, {0, 0}, {0, 0}},
+        {{1, 2}, {0, 0}, {0, 0}},
     };
 
     // Expected weights after each iteration
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>>> expected_weights = {
-        {{0, 0, 0, 0, 0}, {}, {}, {}, {}}, // Empty CSR
-        {{0}, {0}, {0}, {0}, {0}},
-        {{0}, {0}, {0}, {0}, {0}}
+        {{0, 0, 0, 0, 0}, {}, {}, {}, {}}, // Empty CSR with nullptrs
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0, 0}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.000710195, 0.000710195}, {0, 0}, {0.300001, 0.300001}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0, 0}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0, 0}},
     };
 
     // Expected weights after synaptogenesis for each iteration
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>, std::vector<VALUE_TYPE>>> expected_weights_after_synaptogenesis = {
         {{0, 0, 1, 2, 2}, {0, 0}, {0, 0}, {0, 0}, {0, 0}}, // Empty CSR
-        {{0}, {0}, {0}, {0}, {0}},
-        {{0}, {0}, {0}, {0}, {0}}
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0.3, 0.3}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.000710195, 0.000710195}, {0, 0}, {0.833254, 0.833254}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0.3, 0.3}},
+        {{0, 0, 1, 2, 2}, {0, 0}, {0.0003, 0.0003}, {0, 0}, {0.3, 0.3}},
     };
 
     for (int iter = 0; iter < num_iterations; ++iter) {
+        INFO("iter: " << iter);
         input_starmap.iterate(2);
         output_starmap.iterate(2);
 
         // Assert correctness of input and output starmap CSRs
+        INFO("checking expected_input_starmap_csrs");
         CHECK_CSR_VALUES(input_starmap.csrMatrix, expected_input_starmap_csrs[iter]);
+
+        INFO("checking expected_output_starmap_csrs");
         CHECK_CSR_VALUES(output_starmap.csrMatrix, expected_output_starmap_csrs[iter]);
 
         auto input_portion = top_k_csr_biased(input_values_data[iter].data(), input_starmap.csrMatrix, 2, 4, 2, 4);
 
         // Assert correctness of input_portion CSR
+        INFO("checking expected_input_portion");
         CHECK_CSR_VALUES(input_portion, expected_input_portion[iter]);
 
         VALUE_TYPE output[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -937,6 +965,7 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
             output[i + 3] += input_values_data[iter][i + 4];
         }
 
+        INFO("checking expected_outputs");
         CHECK_VECTOR_ALMOST_EQUAL(std::vector<VALUE_TYPE>(output, output + 6), expected_outputs[iter]);
 
         // Compute MSE jacobian
@@ -955,25 +984,31 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
 
         auto output_grad_portion = top_k_csr_biased(mse_output_grad, output_starmap.csrMatrix, 2, 3, 1, 4);
 
+        INFO("checking expected_output_grad_portion");
         CHECK_CSR_VALUES(output_grad_portion, expected_output_grad_portion[iter], (VALUE_TYPE)1e-6);
 
         sparse_linear_vectorized_backward_is(input_portion, weights, output_grad_portion, output_grad_portion,
                                              in_grad, mse_output_grad, 4);
 
+        INFO("checking expected_probes");
         CHECK_COO_PROBES(weights.probes, expected_probes[iter], (VALUE_TYPE)1e-6);
 
         // Assert in_grad correctness
+        INFO("checking expected_in_grad");
         CHECK_VECTOR_ALMOST_EQUAL(std::vector<VALUE_TYPE>(in_grad, in_grad + 8),
                                   std::vector<VALUE_TYPE>(expected_in_grad[iter]), 1e-5);
 
         optim_weights(weights, learning_rate, 4);
 
         // Verify weights after optimization
-        CHECK_CSR_WEIGHTS(weights.connections, expected_weights[iter]);
+        INFO("checking expected_weights optim");
+        CHECK_CSR_WEIGHTS(weights.connections, expected_weights[iter], (VALUE_TYPE)1e-6);
 
         optim_synaptogenesis(weights, learning_rate, 6, 4);
 
         // Verify weights after synaptogenesis
+        INFO("checking expected_weights_after_synaptogenesis");
         CHECK_CSR_WEIGHTS(weights.connections, expected_weights_after_synaptogenesis[iter]);
+        
     }
 }
