@@ -1,53 +1,131 @@
+/**
+ * @file sparse_matrix.hpp
+ * @brief Sparse matrix library with CSR and COO format support.
+ */
+
 #ifndef __SPARSE_STRUCT_HPP_
 #define __SPARSE_STRUCT_HPP_
 
 #include <cstddef>
 #include <memory>
 
-//template checks
+/**
+ * @brief Type trait to check if a type is a std::array.
+ * @tparam T The type to check.
+ */
 template <typename T>
 struct is_std_array : std::false_type {};
 
+/**
+ * @brief Specialization of is_std_array for std::array types.
+ * @tparam T The element type of the array.
+ * @tparam N The size of the array.
+ */
 template <typename T, std::size_t N>
 struct is_std_array<std::array<T, N>> : std::true_type {};
 
+/**
+ * @brief Helper variable template to check if a type is a std::array.
+ * @tparam T The type to check.
+ */
 template <typename T>
 constexpr bool is_std_array_v = is_std_array<T>::value;
 
 
-// Sub-template for pointers
+/**
+ * @brief Alias template for CSR pointers, stored as an array of unique pointers.
+ * @tparam SIZE_TYPE The type used for sizes and indices.
+ */
 template <class SIZE_TYPE>
 using CSRPointers = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
 
+/**
+ * @brief Alias template for CSR indices, stored as an array of unique pointers.
+ * @tparam SIZE_TYPE The type used for sizes and indices.
+ */
 template <class SIZE_TYPE>
 using CSRIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
 
+/**
+ * @brief Alias template for COO pointers, stored as a single size value (nnz).
+ * @tparam SIZE_TYPE The type used for sizes and indices.
+ */
 template <class SIZE_TYPE>
 using COOPointers = SIZE_TYPE;  // just store nnz
 
+/**
+ * @brief Alias template for COO indices, stored as two arrays of unique pointers.
+ * @tparam SIZE_TYPE The type used for sizes and indices.
+ */
 template <class SIZE_TYPE>
 using COOIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 2>;
 
-//tuples should also work if different types are needed
+/**
+ * @brief Alias template for unary values, stored as one array of unique pointers.
+ * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
+ */
 template <class VALUE_TYPE>
 using UnaryValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 1>;
 
+/**
+ * @brief Alias template for binary values, stored as two arrays of unique pointers.
+ * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
+ */
 template <class VALUE_TYPE>
 using BiValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 2>;
 
+/**
+ * @brief Alias template for ternary values, stored as three arrays of unique pointers.
+ * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
+ */
 template <class VALUE_TYPE>
 using TriValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 3>;
 
+/**
+ * @brief Alias template for quaternary values, stored as four arrays of unique pointers.
+ * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
+ */
 template <class VALUE_TYPE>
 using QuadValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 4>;
 
+/**
+ * @brief Alias template for quinary values, stored as five arrays of unique pointers.
+ * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
+ */
 template <class VALUE_TYPE>
 using PentaValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 5>;
 
+/**
+ * @brief Helper variable template to determine the number of index arrays.
+ * @tparam INDEX_ARRAYS The type of the indices (e.g., std::array or tuple).
+ */
 template <typename INDEX_ARRAYS>
 constexpr std::size_t num_indices = std::tuple_size<INDEX_ARRAYS>::value;
 
-// CSR Struct with sub-templates
+/**
+ * @brief A template structure representing a sparse matrix in CSR or COO format.
+ *
+ * This structure holds pointers, indices, and values for a sparse matrix, along with
+ * the number of rows, columns, and optional reserved space. It supports various
+ * formats via template parameters.
+ *
+ * @tparam SIZE_TYPE The type used for sizes and indices (e.g., int, size_t).
+ * @tparam PTRS The type for pointers (e.g., CSRPointers or COOPointers).
+ * @tparam INDICES The type for indices (e.g., CSRIndices or COOIndices).
+ * @tparam VALUES The type for values (e.g., UnaryValues, BiValues).
+ *
+ * @code
+ * // Example: CSR sparse matrix
+ * using SIZE_TYPE = int;
+ * using PTRS = CSRPointers<SIZE_TYPE>;
+ * using INDICES = CSRIndices<SIZE_TYPE>;
+ * using VALUES = UnaryValues<double>;
+ * PTRS ptrs = ...;  // Initialize pointers
+ * INDICES indices = ...;  // Initialize indices
+ * VALUES values = ...;  // Initialize values
+ * sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES> matrix(ptrs, indices, values, 10, 10);
+ * @endcode
+ */
 template <class SIZE_TYPE, class PTRS, class INDICES, class VALUES>
 struct sparse_struct {
     PTRS ptrs;               // Pointers sub-template
@@ -61,20 +139,44 @@ struct sparse_struct {
     static constexpr std::size_t n_value_arrays = num_indices<VALUES>;
     static constexpr std::size_t n_pointer_arrays = num_indices<PTRS>;
 
-    // Default constructor
+    /**
+     * @brief Default constructor, initializes an empty sparse matrix.
+     */
     sparse_struct()
         : rows(0), cols(0), _reserved_space(0) {}
 
-    // Constructor for pre-allocated arrays
+    /**
+     * @brief Constructor for pre-allocated arrays with reserved space.
+     * @param p Pointers sub-template (moved into the structure).
+     * @param ind Indices sub-template (moved into the structure).
+     * @param val Values sub-template (moved into the structure).
+     * @param num_p Number of rows.
+     * @param max_idx Number of columns.
+     * @param reserved Reserved space for future expansion.
+     */
     sparse_struct(PTRS& p, INDICES& ind, VALUES& val, SIZE_TYPE num_p, SIZE_TYPE max_idx, SIZE_TYPE reserved)
         : ptrs(std::move(p)), indices(std::move(ind)), values(std::move(val)),
           rows(num_p), cols(max_idx), _reserved_space(reserved) {}
 
-    // Constructor without reserved size
+    /**
+     * @brief Constructor for pre-allocated arrays without reserved space.
+     * @param p Pointers sub-template (moved into the structure).
+     * @param ind Indices sub-template (moved into the structure).
+     * @param val Values sub-template (moved into the structure).
+     * @param num_p Number of rows.
+     * @param max_idx Number of columns.
+     */
     sparse_struct(PTRS& p, INDICES& ind, VALUES& val, SIZE_TYPE num_p, SIZE_TYPE max_idx)
         : sparse_struct(std::move(p), std::move(ind), std::move(val), num_p, max_idx, 0) {}
 
-    // Get the number of non-zeros
+    /**
+     * @brief Get the number of non-zero elements in the sparse matrix.
+     *
+     * If PTRS is an array type (e.g., CSR), returns the last pointer value.
+     * If PTRS is a single value (e.g., COO), returns that value directly.
+     *
+     * @return The number of non-zero elements.
+     */
     SIZE_TYPE nnz() const {
         if constexpr (std::is_array_v<decltype(ptrs)> || is_std_array_v<decltype(ptrs)>) { // Check if ptrs is an array type
             return (ptrs[ptrs.size()-1] != nullptr) ? ptrs[ptrs.size()-1][rows] : 0;
@@ -83,30 +185,6 @@ struct sparse_struct {
         }
     }
 
-    // Reserve space for indices and values
-    /*void reserve(SIZE_TYPE new_reserved) {
-        if (new_reserved > _reserved_space) {
-            _reserved_space = new_reserved;
-
-            // Resize index arrays
-            for (std::size_t i = 0; i < indices.indices.size(); ++i) {
-                auto new_indices = std::make_unique<SIZE_TYPE[]>(new_reserved);
-                if (indices.indices[i]) {
-                    std::copy(indices.indices[i].get(), indices.indices[i].get() + nnz(), new_indices.get());
-                }
-                indices.indices[i] = std::move(new_indices);
-            }
-
-            // Resize value arrays
-            for (std::size_t i = 0; i < values.values.size(); ++i) {
-                auto new_values = std::make_unique<typename std::remove_reference<decltype(*values.values[i])>::type[]>(new_reserved);
-                if (values.values[i]) {
-                    std::copy(values.values[i].get(), values.values[i].get() + nnz(), new_values.get());
-                }
-                values.values[i] = std::move(new_values);
-            }
-        }
-    }*/
 };
 
 // tri = weight multiplier, backprop, importance (for optim). Adagrad would use 2 for optim, using quad.

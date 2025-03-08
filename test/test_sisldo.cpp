@@ -808,7 +808,7 @@ void CHECK_CSR_VALUES(const sparse_struct<SIZE_TYPE, CSRPointers<SIZE_TYPE>, CSR
 TEST_CASE("train loop from zero", "[integration_train_loop]") {
     //most important test, every other test matters less.
     //todo: fix random generator so it's actually the same number every test
-    
+
     using SIZE_TYPE = int;
     using VALUE_TYPE = float;
 

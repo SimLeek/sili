@@ -197,21 +197,6 @@ sparse_struct<
         return csr;
     }
 
-    // Parallel section to determine min_row and max_row for each thread
-    /*SIZE_TYPE *thread_min_row = new SIZE_TYPE[num_cpus];
-    SIZE_TYPE *thread_max_row = new SIZE_TYPE[num_cpus];
-
-    #pragma omp parallel num_threads(num_cpus)
-    {
-        SIZE_TYPE tid = omp_get_thread_num();
-        SIZE_TYPE chunk_size = (nnz + num_cpus - 1) / num_cpus;
-        SIZE_TYPE start = tid * chunk_size;
-        SIZE_TYPE end = std::min(start + chunk_size, nnz);
-
-        thread_min_row[tid] = rows[start];
-        thread_max_row[tid] = rows[end - 1] + 1;
-    }*/
-
     // Allocate accumulators for parallel histogram accumulation
     SIZE_TYPE *accum = new SIZE_TYPE[a_coo.rows]();
     if (num_cpus > 1) {
@@ -274,7 +259,6 @@ sparse_struct<
     csr.rows = num_rows;
     csr.cols = a_coo.cols;
     csr.ptrs[0].reset(ptrs);
-    //std::get<0>(csr.indices).reset(std::get<1>(a_coo.indices).release());
     a_coo.indices[0].reset();
     for (std::size_t idx = 0; idx < num_indices<INDEX_ARRAYS>-1; ++idx) {
         csr.indices[idx].reset(a_coo.indices[idx+1].release());

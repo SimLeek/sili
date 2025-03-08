@@ -6,3 +6,4 @@ build/
 .idea
 __pycache__/
 test/build_tests
+docs/
