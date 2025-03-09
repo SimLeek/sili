@@ -24,6 +24,8 @@ set(SOURCE_FILES
 set(HEADER_FILES
     tests_main.h
 
+    ../sili/lib/headers/parallel.hpp
+
     ../sili/lib/headers/linear_sisldo.hpp
 
     #PASSED TESTS
@@ -44,7 +46,9 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
 
-    test_sisldo.cpp
+    test_parallel.cpp
+
+    #test_sisldo.cpp
     #COMPLETED TESTS
     #test_coo.cpp
     #test_csr.cpp
@@ -63,7 +67,7 @@ add_executable(
 )
 
 # set(Python3_LIBRARY "/usr/lib/python3.11/config-3.11-x86_64-linux-gnu/libpython3.11.a")
-set(Python3_LIBRARY "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a")
+set(Python3_LIBRARY "/usr/lib/python3.13/config-3.13-x86_64-linux-gnu/libpython3.13.a")
 
 
 # currently, torch is broken in arch linux. Package is marked out of date. Should be fixed in a week or so.

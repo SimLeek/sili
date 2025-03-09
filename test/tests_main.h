@@ -1,6 +1,7 @@
 #ifndef _TEST_MAIN_H__
 #define _TEST_MAIN_H__
 
+#include "csr.hpp"
 #include <cstddef>
 #include <limits>
 #define CATCH_CONFIG_MAIN
@@ -79,18 +80,6 @@ std::ostream &operator<<(std::basic_ostream<Ch, Tr> &o, const sili::unique_vecto
     o << "}";
     return o;
 }
-
-/*template <typename T> std::vector<T> vector_diff(const std::vector<T> &a, const std::vector<T> &b) {
-    std::vector<T> diff;
-    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(diff));
-    return diff;
-}
-
-template <typename T> std::vector<T> vector_diff(const sili::unique_vector<T> &a, const sili::unique_vector<T> &b) {
-    std::vector<T> diff;
-    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(diff));
-    return diff;
-}*/
 
 template <typename VecA, typename VecB>
 inline typename std::enable_if<is_supported_vector<VecA>::value && is_supported_vector<VecB>::value, VecA>::type&
@@ -272,5 +261,108 @@ template <typename T> std::vector<T> vec(T *arr, size_t size) { return std::vect
             REQUIRE_VECTOR_EQUAL(a[i], b[i]);                                                                          \
         }                                                                                                              \
     } while ((void)0, 0)
+
+template <typename T>
+std::string csr_diff_string(const sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>>& csr,
+                            const std::vector<size_t>& expected_ptrs,
+                            const std::vector<size_t>& expected_indices,
+                            const std::vector<T>& expected_values,
+                            size_t expected_rows,
+                            size_t expected_cols,
+                            double epsilon = std::numeric_limits<T>::epsilon()) {
+    std::ostringstream oss;
+
+    // Dimensions
+    oss << "CSR rows: " << csr.rows << ", Expected rows: " << expected_rows << "\n";
+    oss << "CSR cols: " << csr.cols << ", Expected cols: " << expected_cols << "\n";
+
+    // Pointers
+    std::vector<size_t> ptrs_vec(csr.ptrs[0].get(), csr.ptrs[0].get() + csr.rows + 1);
+    oss << "CSR ptrs: " << ptrs_vec << ", Expected ptrs: " << expected_ptrs << "\n";
+    //oss << "Ptrs diff: " << vector_diff_string(ptrs_vec, expected_ptrs, 0) << "\n";
+
+    // Number of non-zero elements
+    size_t nnz = csr.nnz();
+    oss << "CSR nnz: " << nnz << " ,Expected nnz: " << expected_indices.size() << "\n";
+
+    // Indices
+    std::vector<size_t> indices_vec(csr.indices[0].get(), csr.indices[0].get() + nnz);
+    oss << "CSR indices: " << indices_vec << ", Expected indices: " << expected_indices << "\n";
+    //oss << "Indices diff: " << vector_diff_string(indices_vec, expected_indices, 0) << "\n";
+
+    // Values
+    std::vector<T> values_vec(csr.values[0].get(), csr.values[0].get() + nnz);
+    oss << "CSR values: " << values_vec << ", Expected values: " << expected_values << "\n";
+    //oss << "Values diff: " << vector_diff_string(values_vec, expected_values, epsilon) << "\n";
+
+    return oss.str();
+}
+
+template <typename T>
+bool csr_almost_equal(const sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>>& csr,
+                        const std::vector<size_t>& expected_ptrs,
+                        const std::vector<size_t>& expected_indices,
+                        const std::vector<T>& expected_values,
+                        size_t expected_rows,
+                        size_t expected_cols,
+                        double epsilon = std::numeric_limits<T>::epsilon()) {
+    // Check dimensions
+    if (csr.rows != expected_rows || csr.cols != expected_cols) {
+        return false;
+    }
+
+    // Check ptrs
+    std::vector<size_t> ptrs_vec(csr.ptrs[0].get(), csr.ptrs[0].get() + csr.rows + 1);
+    if (ptrs_vec != expected_ptrs) {
+        return false;
+    }
+
+    // Check nnz consistency
+    size_t nnz = csr.nnz();
+    if (nnz != expected_indices.size() || nnz != expected_values.size()) {
+        return false;
+    }
+
+    // Check indices
+    std::vector<size_t> indices_vec(csr.indices[0].get(), csr.indices[0].get() + nnz);
+    if (indices_vec != expected_indices) {
+        return false;
+    }
+
+    // Check values
+    std::vector<T> values_vec(csr.values[0].get(), csr.values[0].get() + nnz);
+    if constexpr (std::is_floating_point<T>::value) {
+        return almost_equal(values_vec, expected_values, epsilon);
+    } else {
+        return values_vec == expected_values;
+    }
+}
+
+#define CHECK_CSR_EQUAL(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols) \
+    do { \
+        INFO(csr_diff_string(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, 0)); \
+        bool success = csr_almost_equal(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, 0); \
+        CHECK(success); \
+    } while ((void)0, 0)
+
+#define CHECK_CSR_ALMOST_EQUAL_3(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, epsilon) \
+    do { \
+        INFO(csr_diff_string(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, epsilon)); \
+        bool success = csr_almost_equal(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, epsilon); \
+        CHECK(success); \
+    } while ((void)0, 0)
+
+#define CHECK_CSR_ALMOST_EQUAL_2(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols) \
+    do { \
+        using ValueType = std::remove_reference_t<decltype(csr.values[0][0])>; \
+        INFO(csr_diff_string(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, std::numeric_limits<ValueType>::epsilon())); \
+        bool success = csr_almost_equal(csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, std::numeric_limits<ValueType>::epsilon()); \
+        CHECK(success); \
+    } while ((void)0, 0)
+
+ #define CHECK_CSR_ALMOST_EQUAL_x(x, csr, expected_ptrs, expected_indices, expected_values, expected_rows, expected_cols, epsilon, FUNC, ...) FUNC
+
+#define CHECK_CSR_ALMOST_EQUAL(...) \
+        CHECK_CSR_ALMOST_EQUAL_x(, ##__VA_ARGS__, CHECK_CSR_ALMOST_EQUAL_3(__VA_ARGS__), CHECK_CSR_ALMOST_EQUAL_2(__VA_ARGS__))
 
 #endif
