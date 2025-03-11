@@ -34,7 +34,25 @@ struct ReduceArraySize {
 template <typename INDEX_ARRAYS>
 using ReducedArray = typename ReduceArraySize<INDEX_ARRAYS>::type;
 
-/*template <class SIZE_TYPE, class VALUE_TYPE>
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+inline sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>>
+create_csr(
+    SIZE_TYPE num_rows,
+    SIZE_TYPE num_cols,
+    std::shared_ptr<SIZE_TYPE> ptrs,
+    std::shared_ptr<SIZE_TYPE> indices,
+    std::shared_ptr<VALUE_TYPE> values
+) {
+    sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>> csr;
+    csr.rows = num_rows;
+    csr.cols = num_cols;
+    csr.ptrs[0] = ptrs;
+    csr.indices[0] = indices;
+    csr.values[0] = values;
+    return csr;
+}
+/*
+template <class SIZE_TYPE, class VALUE_TYPE>
 CSRInput<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
                                                      const sili::unique_vector<sili::unique_vector<VALUE_TYPE>> *values,
                                                      SIZE_TYPE num_col,
@@ -42,19 +60,19 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sil
                                                      SIZE_TYPE numNonZero) {
     // Allocate memory for the CSR format
     CSRInput<SIZE_TYPE, VALUE_TYPE> csr;
-    csr.ptrs = std::make_unique<SIZE_TYPE[]>(num_col + 1);
-    csr.indices = std::make_unique<SIZE_TYPE[]>(numNonZero);
+    csr.ptrs[0].reset(std::make_unique<SIZE_TYPE[]>(num_col + 1));
+    csr.indices[0].reset(std::make_unique<SIZE_TYPE[]>(numNonZero));
 
     if (values != nullptr) {
-        csr.values = std::make_unique<VALUE_TYPE[]>(numNonZero);
+        csr.values[0].reset(std::make_unique<VALUE_TYPE[]>(numNonZero));
     } else {
-        csr.values = nullptr;
+        csr.values[0].reset(nullptr);
     }
 
     SIZE_TYPE ptr = 0; // Initialize the pointers for the flattened arrays
 
     for (SIZE_TYPE row = 0; row < num_row; row++) {
-        csr.ptrs[row] = ptr;
+        csr.ptrs[0][row] = ptr;
 
         const sili::unique_vector<SIZE_TYPE> &col_idx = (*indices)[row];
         ptr += col_idx.size();
@@ -66,7 +84,7 @@ CSRInput<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sil
         }
 
         // Flatten the row_indices and values vectors for this column
-        std::copy(col_idx.begin(), col_idx.end(), csr.indices.get() + csr.ptrs[row]);
+        std::copy(col_idx.begin(), col_idx.end(), csr.indices[0].get() + csr.ptrs[0][row]);
 
         if (values != nullptr) {
             const sili::unique_vector<VALUE_TYPE> &val = (*values)[row];
