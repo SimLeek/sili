@@ -3,6 +3,7 @@
 
 #include "csr.hpp"
 #include "parallel.hpp"
+#include "sparse_struct.hpp"
 #include <algorithm>
 #include <functional>
 #include <iterator>
@@ -171,6 +172,47 @@ sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::sh
 }
 
 /**
+ * Sum contributions from mapped neurons back to original neurons using the mapping.
+ *
+ * @tparam SIZE_TYPE Integer type for sizes and indices (e.g., size_t).
+ * @tparam VALUE_TYPE Type for tensor values (e.g., double, float).
+ * @param mapped_contributions Contributions of mapped neurons (size input_tensor.cols).
+ * @param map_ptrs Mapping array where map_ptrs[i] to map_ptrs[i+1] defines mapped indices for original neuron i.
+ * @param num_input_indices Number of original neurons.
+ * @param original_contributions_output_pre_map Output array for original neuron contributions (size num_input_indices).
+ * @param num_cpus Number of CPU threads to use.
+ */
+ template <typename SIZE_TYPE, typename VALUE_TYPE>
+ void sum_contributions_to_original(
+     const VALUE_TYPE* mapped_contributions,
+     const std::vector<SIZE_TYPE>& map_ptrs,
+     SIZE_TYPE num_input_indices,
+     VALUE_TYPE* importance,
+     const int num_cpus = 4
+ ) {
+     #pragma omp parallel for num_threads(num_cpus) reduction(+:original_contributions_output_pre_map[:num_input_indices])
+     for (SIZE_TYPE original_index = 0; original_index < num_input_indices; original_index++) {
+         VALUE_TYPE sum = 0;
+         for (SIZE_TYPE mapped_ptr = map_ptrs[original_index]; 
+              mapped_ptr < map_ptrs[original_index + 1]; 
+              mapped_ptr++) 
+         {
+             SIZE_TYPE mapped_index = mapped_ptr; // Direct indexing into mapped_contributions
+             sum += mapped_contributions[mapped_index];
+         }
+         importance[original_index] += sum;
+     }
+ }
+
+void decay_pass(float* importance, size_t num_elements, float delta) {
+#pragma omp parallel for  // Optional: parallelize with OpenMP
+    for (size_t i = 0; i < num_elements; i++) {
+        float imp = importance[i];
+        importance[i] = imp * (1 - delta * exp(-fabs(imp)));
+    }
+}
+
+/**
  * @brief Contracts an expanded sparse tensor back to original indices using aggregation.
  *
  * Contracts an expanded tensor back to original indices via `map_ptrs`, aggregating values with a customizable function (default: average). Parallelized with OpenMP.
@@ -293,6 +335,111 @@ sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::sh
 
     // Step 4: Return the CSR structure
     return create_csr(num_rows, num_input_indices, output_ptrs, output_indices, output_values);
+}
+
+/**
+ * @brief Distributes importances from contracted outputs to expanded neurons.
+ *
+ * Given importances for contracted outputs, this function distributes each importance equally
+ * to the expanded neurons that contributed to it, dividing by the number of expanded neurons
+ * per original index as defined by map_ptrs. Parallelized with OpenMP.
+ *
+ * @tparam SIZE_TYPE Integer type for sizes and indices (e.g., size_t).
+ * @tparam VALUE_TYPE Type for values (e.g., double, float).
+ * @param contracted_importances Importances of contracted outputs (size num_input_indices).
+ * @param map_ptrs Mapping array where map_ptrs[i] to map_ptrs[i+1] defines expanded indices for original index i.
+ * @param num_input_indices Number of original indices.
+ * @param num_expanded_neurons Total number of expanded neurons.
+ * @param expanded_contributions Output array for contributions to expanded neurons (size num_expanded_neurons).
+ * @param num_cpus Number of CPU threads (default: 4).
+ */
+ template <typename SIZE_TYPE, typename VALUE_TYPE>
+ void divide_contributions_to_inputs(
+     const VALUE_TYPE* contracted_importances,
+     const std::vector<SIZE_TYPE>& map_ptrs,
+     SIZE_TYPE num_input_indices,
+     SIZE_TYPE num_expanded_neurons,
+     VALUE_TYPE* expanded_contributions,
+     const int num_cpus = 4
+ ) {
+     #pragma omp parallel for num_threads(num_cpus)
+     for (SIZE_TYPE i = 0; i < num_input_indices; i++) {
+         SIZE_TYPE k_i = map_ptrs[i + 1] - map_ptrs[i];
+         VALUE_TYPE contrib = contracted_importances[i] / k_i;
+         for (SIZE_TYPE j = map_ptrs[i]; j < map_ptrs[i + 1]; j++) {
+             expanded_contributions[j] = contrib;
+         }
+     }
+ }
+
+ template <typename SIZE_TYPE, typename VALUE_TYPE>
+ void fiber_expand_backward(
+     const std::vector<SIZE_TYPE>& map_ptrs,
+     const sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>>& grad_expanded,
+     sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>>& grad_input,
+     VALUE_TYPE* importance_updates, // Dense, size num_input_indices
+     int num_cpus = 4
+ ) {
+     // Sum aggregation for contraction
+     auto sum_aggregate = [](const std::vector<VALUE_TYPE>& vals) {
+         return std::accumulate(vals.begin(), vals.end(), VALUE_TYPE(0));
+     };
+ 
+     // Use fiber_contract_forward to sum gradients back to original indices
+     grad_input = fiber_contract_forward(grad_expanded, map_ptrs, num_cpus, sum_aggregate);
+ 
+    // Compute importance updates using grad_input
+    #pragma omp parallel for num_threads(num_cpus)
+    for (SIZE_TYPE b = 0; b < grad_input.rows; b++) {
+        for (SIZE_TYPE ptr = grad_input.ptrs[0][b]; ptr < grad_input.ptrs[0][b + 1]; ptr++) {
+            SIZE_TYPE i = grad_input.indices[0][ptr]; // Index in original input space
+            VALUE_TYPE grad_value = grad_input.values[0][ptr];
+            importance_updates[i] -= grad_value;
+        }
+    }
+ }
+
+ template <typename SIZE_TYPE, typename VALUE_TYPE>
+void fiber_contract_backward(
+    const std::vector<SIZE_TYPE>& map_ptrs,
+    const sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>& grad_contracted,
+    sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>& grad_expanded,
+    VALUE_TYPE* expanded_importance_updates, // Dense array, size num_expanded_neurons
+    int num_cpus = 4
+) {
+    SIZE_TYPE num_rows = grad_contracted.rows;
+    SIZE_TYPE num_input_indices = map_ptrs.size() - 1;
+
+    // Step 1: Pre-scale grad_contracted by 1/k_i
+    auto scaled_values = std::make_shared<VALUE_TYPE[]>(grad_contracted.nnz());
+    #pragma omp parallel for num_threads(num_cpus)
+    for (SIZE_TYPE ptr = 0; ptr < grad_contracted.values[0].size(); ptr++) {
+        SIZE_TYPE i = grad_contracted.indices[0][ptr]; // Index in contracted tensor
+        SIZE_TYPE k_i = map_ptrs[i + 1] - map_ptrs[i]; // Number of expanded indices
+        scaled_values[ptr] = grad_contracted.values[0][ptr] / k_i;
+    }
+
+    // Create a new sparse tensor with scaled values
+    auto scaled_grad_contracted = create_csr(
+        num_rows,
+        num_input_indices,
+        grad_contracted.ptrs[0],
+        grad_contracted.indices[0],
+        scaled_values
+    );
+
+    // Step 2: Expand the pre-scaled gradients
+    grad_expanded = fiber_expand_forward(scaled_grad_contracted, map_ptrs, num_cpus);
+
+    // Step 3: Compute importance updates using grad_expanded
+    #pragma omp parallel for num_threads(num_cpus)
+    for (SIZE_TYPE b = 0; b < grad_expanded.rows; b++) {
+        for (SIZE_TYPE ptr = grad_expanded.ptrs[0][b]; ptr < grad_expanded.ptrs[0][b + 1]; ptr++) {
+            SIZE_TYPE j = grad_expanded.indices[0][ptr]; // Index in expanded space
+            VALUE_TYPE grad_value = grad_expanded.values[0][ptr];
+            expanded_importance_updates[j] -= grad_value;
+        }
+    }
 }
 
 #endif

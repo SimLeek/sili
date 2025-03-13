@@ -7,71 +7,102 @@
 #include <vector>
 
 /**
- * Perform a forward pass of a sparse linear layer with sparse input
+ * Perform a forward pass of a sparse linear layer with sparse input,
+ * optionally computing contributions for mapped input neurons.
  *
- * @param input_tensor The input csr. Rows MUST be defined, because batch=row.
- * @param weight_tensor The weight csc. cols becomes rows for CSC context, which makes the matmul easier.
- * @param output The dense output. Its size must match input_tensor.cols*weight_tensor.rows.
- *
- * In practice there are almost always enough synapses and inputs that the output is dense.
- * Use top_k, gaussian, positive-only, etc. methods to sparsify the output before sending to another layer.
+ * @tparam SIZE_TYPE Integer type for sizes and indices (e.g., size_t).
+ * @tparam VALUE_TYPE Type for tensor values (e.g., double, float).
+ * @param input_tensor The input CSR tensor. Rows represent batches.
+ * @param weights The weight CSC tensor.
+ * @param output The dense output array of size input_tensor.rows * weights.connections.cols.
+ * @param train Flag to indicate if training (updates synapse contributions).
+ * @param solidify Factor for synapse contribution accumulation.
+ * @param num_cpus Number of CPU threads to use.
+ * @param original_contributions_output Optional output array for mapped neuron contributions (size input_tensor.cols).
  */
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-void sparse_linear_csr_csc_forward(
-    const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
-    const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
-    VALUE_TYPE* output,
-    bool train,
-    VALUE_TYPE solidify = 0.01,
-    const int num_cpus=4 // usually good default even in the case of many more cpus
-){
-    SIZE_TYPE num_outputs = input_tensor.rows * weights.connections.cols;
-
-    if(weights.connections.values[0]==nullptr){
-        return; // output is 0 due to lack of connections, and it should already be set to 0 anyway.
-    }
-
-    #pragma omp parallel reduction(+:output[:num_outputs]) num_threads(num_cpus)
-    {
-        for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++) {
-            // reset this to 0 every batch
-            std::vector<VALUE_TYPE> thread_output(weights.connections.cols, 0);
-            #pragma omp for  // Parallelize across inputs
-            for (SIZE_TYPE input_ptr = input_tensor.ptrs[0][batch_number]; 
-                 input_ptr < input_tensor.ptrs[0][batch_number + 1]; 
-                 input_ptr++) 
-            {
-                SIZE_TYPE input_index = input_tensor.indices[0][input_ptr];
-                VALUE_TYPE input_value = input_tensor.values[0][input_ptr];
-
-                for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; 
-                     weight_ptr < weights.connections.ptrs[0][input_index + 1]; 
-                     weight_ptr++) 
-                {
-                    // Compute contribution
-                    VALUE_TYPE weight_value = weights.connections.values[0][weight_ptr];
-                    SIZE_TYPE output_index = weights.connections.indices[0][weight_ptr];
-                    auto weight_contribution = weight_value * input_value;
-
-                    if (train) {
-                        //weights are unique per input-output combo and batches are sequential here, so atomic isn't necessary
-                        // keeping the for on the inputs is important!
-                        weights.connections.values[2][weight_ptr] += weight_contribution * solidify; 
-                    }
-
-                    // Accumulate in thread-private buffer
-                    thread_output[output_index] += weight_contribution;
-                }
-            }
-
-            //don't prallelize here, because the specific thread needs to copy its full output, not split further
-            for (SIZE_TYPE i = batch_number * weights.connections.cols; i < (batch_number+1) * weights.connections.cols; i++) {
-                //don't use pragma omp atomic here either. reduction takes care of that: "reduction(+:output[:num_outputs])"
-                output[i] += thread_output[i-(batch_number * weights.connections.cols)];
-            }
-        }
-    }
-}
+ template <typename SIZE_TYPE, typename VALUE_TYPE>
+ void sparse_linear_csr_csc_forward(
+     const CSRInput<SIZE_TYPE, VALUE_TYPE>& input_tensor,
+     const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+     VALUE_TYPE* output,
+     bool train,
+     VALUE_TYPE solidify = 0.01,
+     const int num_cpus = 4,
+     VALUE_TYPE* original_contributions_output = nullptr
+ ) {
+     SIZE_TYPE num_outputs = input_tensor.rows * weights.connections.cols;
+     SIZE_TYPE num_mapped_neurons = input_tensor.cols;
+ 
+     if (weights.connections.values[0] == nullptr) {
+         return; // Output and contributions (if applicable) remain zero
+     }
+ 
+     #pragma omp parallel num_threads(num_cpus)
+     {
+         // Thread-private buffer for output
+         std::vector<VALUE_TYPE> thread_output(weights.connections.cols, 0);
+ 
+         // Thread-private buffer for contributions (flat across all batches)
+         std::vector<VALUE_TYPE> thread_contributions;
+         if (original_contributions_output != nullptr) {
+             thread_contributions.resize(num_mapped_neurons, 0);
+         }
+ 
+         #pragma omp for reduction(+:output[:num_outputs])
+         for (SIZE_TYPE batch_number = 0; batch_number < input_tensor.rows; batch_number++) {
+             // Reset thread_output for this batch
+             std::fill(thread_output.begin(), thread_output.end(), 0);
+ 
+             for (SIZE_TYPE input_ptr = input_tensor.ptrs[0][batch_number]; 
+                  input_ptr < input_tensor.ptrs[0][batch_number + 1]; 
+                  input_ptr++) 
+             {
+                 SIZE_TYPE input_index = input_tensor.indices[0][input_ptr];
+                 VALUE_TYPE input_value = input_tensor.values[0][input_ptr];
+ 
+                 // Compute sum of weights for contribution
+                 VALUE_TYPE sum_weight = 0;
+                 for (SIZE_TYPE weight_ptr = weights.connections.ptrs[0][input_index]; 
+                      weight_ptr < weights.connections.ptrs[0][input_index + 1]; 
+                      weight_ptr++) 
+                 {
+                     VALUE_TYPE weight_value = weights.connections.values[0][weight_ptr];
+                     SIZE_TYPE output_index = weights.connections.indices[0][weight_ptr];
+                     VALUE_TYPE weight_contribution = weight_value * input_value;
+ 
+                     if (train) {
+                         weights.connections.values[2][weight_ptr] += weight_contribution * solidify;
+                     }
+                     thread_output[output_index] += weight_contribution;
+                     sum_weight += weight_value;
+                 }
+ 
+                 // Accumulate contribution for mapped neuron if requested
+                 if (original_contributions_output != nullptr) {
+                     VALUE_TYPE contribution = input_value * sum_weight;
+                     thread_contributions[input_index] += contribution;
+                 }
+             }
+ 
+             // Copy thread_output to shared output for this batch
+             for (SIZE_TYPE i = batch_number * weights.connections.cols; 
+                  i < (batch_number + 1) * weights.connections.cols; 
+                  i++) 
+             {
+                 output[i] += thread_output[i - (batch_number * weights.connections.cols)];
+             }
+         }
+ 
+         // Reduce thread_contributions into shared original_contributions_output
+         if (original_contributions_output != nullptr) {
+             #pragma omp barrier
+             #pragma omp for reduction(+:original_contributions_output[:num_mapped_neurons])
+             for (SIZE_TYPE i = 0; i < num_mapped_neurons; i++) {
+                 original_contributions_output[i] += thread_contributions[i];
+             }
+         }
+     }
+ }
 
 
 template <typename SIZE_TYPE, typename VALUE_TYPE>
