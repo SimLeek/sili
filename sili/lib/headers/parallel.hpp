@@ -278,7 +278,7 @@ size_t omp_lower_bound(std::vector<T> arr, size_t size, const T &val, const int 
  * @param n Number of elements.
  */
 template <typename SIZE_TYPE, typename SIZE_TYPE2>
-void omp_scan(const std::vector<SIZE_TYPE> &input, std::unique_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+void omp_scan_exclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
     SIZE_TYPE scan_a = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)
     for (SIZE_TYPE i = 0; i < n; ++i) {
@@ -298,8 +298,30 @@ void omp_scan(const std::vector<SIZE_TYPE> &input, std::unique_ptr<SIZE_TYPE[]> 
  * @param output Unique pointer to output array.
  * @param n Number of elements.
  */
+ template <typename SIZE_TYPE, typename SIZE_TYPE2>
+ void omp_scan_inclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+     SIZE_TYPE scan_a = 0;
+ #pragma omp parallel for simd reduction(inscan, + : scan_a)
+     for (SIZE_TYPE i = 0; i < n; ++i) {
+         scan_a += input[i];
+ #pragma omp scan inclusive(scan_a)
+         {
+             output[i] = scan_a;
+         }
+     }
+ }
+ 
+
+/**
+ * @brief Full inclusive parallel prefix sum (scan) using OpenMP.
+ *
+ * @tparam SIZE_TYPE Type of elements.
+ * @param input Input vector.
+ * @param output Unique pointer to output array.
+ * @param n Number of elements.
+ */
 template <typename SIZE_TYPE, typename SIZE_TYPE2>
-void omp_full_scan(const std::vector<SIZE_TYPE> &input, std::unique_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+void omp_full_scan(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
     SIZE_TYPE scan_a = 0;
     output[0] = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)

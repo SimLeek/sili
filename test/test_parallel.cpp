@@ -232,7 +232,7 @@ TEST_CASE("omp_lower_bound handles empty vector", "[lower_bound]") {
 TEST_CASE("omp_scan computes exclusive prefix sum correctly", "[scan]") {
     std::vector<int> input = {1, 2, 3, 4};
     std::unique_ptr<int[]> output(new int[input.size()]);
-    omp_scan(input, output, input.size());
+    omp_scan_exclusive(input, output, input.size());
     std::vector<int> expected = {0, 1, 3, 6}; // Exclusive: 0, 1, 1+2, 1+2+3
     
     std::vector<int> out_vec(output.get(), output.get() + input.size());
@@ -254,7 +254,7 @@ TEST_CASE("omp_full_scan computes inclusive prefix sum correctly", "[scan]") {
 TEST_CASE("omp_scan handles empty vector", "[scan]") {
     std::vector<int> input;
     std::unique_ptr<int[]> output(new int[0]);
-    omp_scan(input, output, 0);
+    omp_scan_exclusive(input, output, 0);
     // Should not crash; no output to check
 }
 

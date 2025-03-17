@@ -442,4 +442,269 @@ void fiber_contract_backward(
     }
 }
 
+
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+void fiber_expand_optim(
+    std::vector<SIZE_TYPE>& map_ptrs,
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const VALUE_TYPE* importance_h,
+    SIZE_TYPE neurons_to_change,
+    bool add=true,
+    int num_cpus = 4
+) {
+    SIZE_TYPE num_input_indices = map_ptrs.size() - 1;
+    std::vector<VALUE_TYPE> avg_importance(num_input_indices);
+    std::vector<VALUE_TYPE> cumulative_priority(num_input_indices + 1);
+    std::vector<SIZE_TYPE> new_k(num_input_indices, 0);
+    std::vector<SIZE_TYPE> add_map_ptrs(num_input_indices + 1);
+    //weights.rows because naming is for csr
+    std::unique_ptr<SIZE_TYPE[]> new_csc_ptrs(add? new SIZE_TYPE[weights.rows + (neurons_to_change) + 1]:new SIZE_TYPE[weights.rows - (neurons_to_change) + 1]);
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        #pragma omp for
+        for (SIZE_TYPE i = 0; i < num_input_indices; i++) {
+            VALUE_TYPE sum = 0;
+            for (SIZE_TYPE h = map_ptrs[i]; h < map_ptrs[i + 1]; h++) {
+                sum += importance_h[h];
+            }
+            SIZE_TYPE k_i = map_ptrs[i + 1] - map_ptrs[i];
+            if(add){
+                avg_importance[i] = (k_i > 0) ? sum / k_i : 0;
+            }else{
+                avg_importance[i] = (k_i > 0) ? -sum / k_i : 0;
+            }
+        }
+    }
+
+    auto change_spots = top_k_indices(avg_importance, map_ptrs.rows, neurons_to_change, num_cpus);
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        #pragma omp for
+        for (SIZE_TYPE i = 0; i < neurons_to_change; i++) {
+            add_map_ptrs[change_spots[i]] = 1;
+        }
+    }
+
+    omp_scan_inclusive(add_map_ptrs.data(), add_map_ptrs.data(), add_map_ptrs.size());
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        if(add){
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < num_input_indices+1; i++) {
+                map_ptrs[i] += add_map_ptrs[i];
+            }
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < weights.rows + (neurons_to_change) + 1; i++) {
+                new_csc_ptrs[i] = weights.ptrs[i-add_map_ptrs[i]];
+            }
+        } else{
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < num_input_indices+1; i++) {
+                map_ptrs[i] -= add_map_ptrs[i];
+            }
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < weights.rows + (neurons_to_change) + 1; i++) {
+                new_csc_ptrs[i] = weights.ptrs[i+add_map_ptrs[i]];
+                if(add_map_ptrs[i]!=add_map_ptrs[i-1]){
+                    //sort weights and indices, not really in parallel, this is just the only function I have that does it
+                    omp_sort_ascending(weights.indices.data()+new_csc_ptrs[i], weights.values.data()+new_csc_ptrs[i+1]);
+                    //merge nearby equal indices
+                    SIZE_TYPE sub=0;
+                    for(SIZE_TYPE j=new_csc_ptrs[i-1]; j<new_csc_ptrs[i]; j++){
+                        if(weights.indices[j]==weights.indices[j+1]){
+                            weights.values[j-sub]+=weights.values[j+1];
+                            sub+=1;
+                        }
+                        weights.indices[j-sub]=weights.indices[j];
+                    }
+                }
+            }
+        }
+    }    
+
+    // Rebuild weights
+    SIZE_TYPE new_H = map_ptrs.back();
+    auto new_csc = create_csr(new_H, weights.cols, new_csc_ptrs, weights.connections.indices, weights.connections.values);
+
+    return new_csc;
+}
+
+//todo: move this to csr.hpp
+template <typename SIZE_TYPE, typename VALUE_TYPE> 
+void merge_duplicate_columns(
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    int num_cpus = 4
+){
+    // Parallel merging of nearby equal indices
+    std::vector<SIZE_TYPE> local_sub(weights.rows, 0);
+    std::vector<std::vector<SIZE_TYPE>> compacted_indices_per_row(weights.rows);
+    std::vector<std::vector<VALUE_TYPE>> compacted_values_per_row(weights.rows);
+
+    // Step 1: Compact each row in parallel
+    #pragma omp parallel for num_threads(num_cpus)
+    for (SIZE_TYPE i = 0; i < weights.rows; i++) {
+        std::vector<SIZE_TYPE> local_indices;
+        std::vector<VALUE_TYPE> local_values;
+        SIZE_TYPE sub = 0;
+        SIZE_TYPE j = weights.ptrs[i];
+        while (j < weights.ptrs[i + 1]) {
+            SIZE_TYPE current_idx = weights.indices[j];
+            VALUE_TYPE sum = weights.values[j];
+            j++;
+            while (j < weights.ptrs[i + 1] && weights.indices[j] == current_idx) {
+                sum += weights.values[j];
+                j++;
+                sub++;
+            }
+            local_indices.push_back(current_idx);
+            local_values.push_back(sum);
+        }
+        compacted_indices_per_row[i] = std::move(local_indices);
+        compacted_values_per_row[i] = std::move(local_values);
+        local_sub[i] = sub;
+    }
+
+    // Step 2: Compute compacted row lengths
+    std::vector<SIZE_TYPE> compacted_row_len(weights.rows);
+    for (SIZE_TYPE i = 0; i < weights.rows; i++) {
+        compacted_row_len[i] = compacted_indices_per_row[i].size();
+    }
+
+    // Step 3: Compute new_ptrs using exclusive scan
+    std::vector<SIZE_TYPE> new_ptrs(weights.rows + 1);
+    new_ptrs[0] = 0;
+    omp_scan_exclusive(compacted_row_len.data(), new_ptrs.data() + 1, weights.rows);
+
+    // Total new number of non-zeros
+    SIZE_TYPE new_nnz = new_ptrs[weights.rows];
+
+    // Allocate new arrays
+    std::shared_ptr<SIZE_TYPE> new_indices(new SIZE_TYPE[new_nnz]);
+    std::shared_ptr<VALUE_TYPE> new_values(new VALUE_TYPE[new_nnz]);
+
+    // Step 4: Write compacted data in parallel
+    #pragma omp parallel for num_threads(num_cpus)
+    for (SIZE_TYPE i = 0; i < weights.rows; i++) {
+        SIZE_TYPE write_start = new_ptrs[i];
+        SIZE_TYPE len = compacted_row_len[i];
+        for (SIZE_TYPE k = 0; k < len; k++) {
+            new_indices[write_start + k] = compacted_indices_per_row[i][k];
+            new_values[write_start + k] = compacted_values_per_row[i][k];
+        }
+    }
+
+    // Update weights structure
+    weights.ptrs = std::move(new_ptrs);
+    weights.indices = std::move(new_indices);
+    weights.values = std::move(new_values);
+    //weights.nnz = new_nnz;
+}
+
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+void fiber_contract_optim(
+    std::vector<SIZE_TYPE>& map_ptrs,
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>& weights,
+    const VALUE_TYPE* importance_h,
+    SIZE_TYPE neurons_to_change,
+    bool add=true,
+    int num_cpus = 4
+) {
+    SIZE_TYPE num_output_indices = map_ptrs.size() - 1;
+    std::vector<VALUE_TYPE> avg_importance(num_output_indices);
+    std::vector<VALUE_TYPE> cumulative_priority(num_output_indices + 1);
+    std::vector<SIZE_TYPE> new_k(num_output_indices, 0);
+    std::vector<SIZE_TYPE> add_map_ptrs(num_output_indices + 1);
+    //weights.rows because naming is for csr
+    //std::unique_ptr<SIZE_TYPE[]> new_csc_ptrs(add? new SIZE_TYPE[weights.rows + (neurons_to_change) + 1]:new SIZE_TYPE[weights.rows - (neurons_to_change) + 1]);
+
+    if(add){
+        weights.cols += neurons_to_change;
+    }else{
+        weights.cols -= neurons_to_change;
+    }
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        #pragma omp for
+        for (SIZE_TYPE i = 0; i < num_output_indices; i++) {
+            VALUE_TYPE sum = 0;
+            for (SIZE_TYPE h = map_ptrs[i]; h < map_ptrs[i + 1]; h++) {
+                sum += importance_h[h];
+            }
+            SIZE_TYPE k_i = map_ptrs[i + 1] - map_ptrs[i];
+            if(add){
+                avg_importance[i] = (k_i > 0) ? sum / k_i : 0;
+            }else{
+                avg_importance[i] = (k_i > 0) ? -sum / k_i : 0;
+            }
+        }
+    }
+
+    auto change_spots = top_k_indices(avg_importance, map_ptrs.rows, neurons_to_change, num_cpus);
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        #pragma omp for
+        for (SIZE_TYPE i = 0; i < neurons_to_change; i++) {
+            add_map_ptrs[change_spots[i]] = 1;
+        }
+    }
+
+    omp_scan_inclusive(add_map_ptrs.data(), add_map_ptrs.data(), add_map_ptrs.size());
+
+    #pragma omp parallel num_threads(num_cpus)
+    {
+        // Step 1 & 2: Compute sum and average importance
+        if(add){
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < num_output_indices+1; i++) {
+                map_ptrs[i] += add_map_ptrs[i];
+            }
+            #pragma omp for
+            for(SIZE_TYPE i=0; i<weights.rows; i++){
+                for (SIZE_TYPE j = weights.ptrs[i]; j < weights.ptrs[i+1]; j++) {
+                    weights.indices[j] += add_map_ptrs[weights.indices[j]];
+                }
+            }
+        } else{
+            #pragma omp for
+            for (SIZE_TYPE i = 0; i < num_output_indices+1; i++) {
+                map_ptrs[i] -= add_map_ptrs[i];
+            }
+            #pragma omp for
+            for(SIZE_TYPE i=0; i<weights.rows; i++){
+                for (SIZE_TYPE j = weights.ptrs[i]; j < weights.ptrs[i+1]; j++) {
+                    weights.indices[j] -= add_map_ptrs[weights.indices[j]];
+                }
+            }
+            //merge nearby equal indices
+            merge_duplicate_columns(weights, num_cpus);
+
+            //todo: make this parallel using some scans and stuff
+            /*SIZE_TYPE sub=0;
+            for(SIZE_TYPE i=0;i<weights.rows;i++){
+                weights.ptrs[i+1]-=sub;
+                for(SIZE_TYPE j=weights.ptrs[i]; j<weights.ptrs[i+1]; j++){
+                    if(weights.indices[j]==weights.indices[j+1]){
+                        weights.values[j-sub]+=weights.values[j+1];
+                        sub+=1;
+                    }
+                    weights.indices[j-sub]=weights.indices[j];
+                }
+            }*/
+        }
+    }    
+
+    return weights;  // use same data since we've already reserved space
+}
+
+
 #endif
