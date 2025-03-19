@@ -10,6 +10,7 @@
 #include <numeric>
 #include <omp.h>
 #include <vector>
+#include <cstring> // for memset
 
 /**
  * @brief Comparator class for less-than comparison between two types.
@@ -444,6 +445,105 @@ sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>> omp_t
     csr.indices[0].reset(csr_indices.release());
 
     return csr;
+}
+
+
+/**
+ * @brief Computes the starting indices of each run of identical values in the input array and the values of these runs.
+ *
+ * This function processes the input array to identify the indices where each new sequence of identical values begins,
+ * including the first element (index 0). For each such index, it records the index and the value at that position.
+ * The function leverages OpenMP for parallel processing to improve performance on large inputs.
+ *
+ * @tparam T The type of elements in the input array. Must support equality comparison (operator!=).
+ * @param input_array Pointer to the input array of type T. Should be sorted with duplicates. Non-sorted will only reduce neighboring duplicates.
+ * @param n Size of the input array.
+ * @param[out] output_array Reference to a pointer that will be set to a newly allocated array containing the values at the start of each run.
+ * @param[out] output_pointers Reference to a pointer that will be set to a newly allocated array containing the starting indices of each run.
+ * @param[out] output_size Reference to a size_t that will be set to the number of runs found.
+ * @param num_cpus Number of CPU threads to use for parallel processing.
+ *
+ * @note The caller is responsible for deallocating the memory allocated for `output_array` and `output_pointers` using `delete[]`.
+ *
+ * ### Example
+ * - **Input:** `input_array = [0, 0, 0, 1, 1, 1, 3, 3, 3, 3, 3, 4, 5, 5, 7, 7, 7, 7]`
+ * - **Output:**
+ *   - `output_array = [0, 1, 3, 4, 5, 7]`
+ *   - `output_pointers = [0, 3, 6, 11, 12, 14]`
+ *   - `output_size = 6`
+ */
+template <typename T>
+void reduce_unique_with_pointers(const T* input_array, size_t n, T*& output_array, size_t*& output_pointers, size_t& output_size, int num_cpus) {
+    // Set number of threads
+    omp_set_num_threads(num_cpus);
+
+    // Step 1: Detect transitions in parallel
+    long* transitions = new long[n];
+    #pragma omp parallel for
+    for (size_t i = 0; i < n; i++) {
+        if (i == 0 || input_array[i] != input_array[i - 1]) {
+            transitions[i] = static_cast<long>(i);
+        } else {
+            transitions[i] = -1;
+        }
+    }
+
+    // Step 2: Parallel reduction to count valid transitions
+    size_t local_counts[num_cpus];
+    memset(local_counts, 0, num_cpus * sizeof(size_t));
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        size_t chunk_size = n / num_cpus;
+        size_t start = tid * chunk_size;
+        size_t end = (tid == num_cpus - 1) ? n : start + chunk_size;
+        size_t count = 0;
+        for (size_t i = start; i < end; i++) {
+            if (transitions[i] != -1) {
+                count++;
+            }
+        }
+        local_counts[tid] = count;
+    }
+    output_size = 0;
+    for (int t = 0; t < num_cpus; t++) {
+        output_size += local_counts[t];
+    }
+
+    // Step 3: Allocate output arrays
+    output_pointers = new size_t[output_size];
+    output_array = new T[output_size];
+
+    // Step 4: Compute offsets with a prefix sum (serial, but small)
+    size_t offsets[num_cpus + 1];
+    offsets[0] = 0;
+    for (int t = 0; t < num_cpus; t++) {
+        offsets[t + 1] = offsets[t] + local_counts[t];
+    }
+
+    // Step 5: Populate output_pointers in parallel
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        size_t chunk_size = n / num_cpus;
+        size_t start = tid * chunk_size;
+        size_t end = (tid == num_cpus - 1) ? n : start + chunk_size;
+        size_t pos = offsets[tid];
+        for (size_t i = start; i < end; i++) {
+            if (transitions[i] != -1) {
+                output_pointers[pos++] = static_cast<size_t>(transitions[i]);
+            }
+        }
+    }
+
+    // Step 6: Populate output_array in parallel using output_pointers
+    #pragma omp parallel for
+    for (size_t i = 0; i < output_size; i++) {
+        output_array[i] = input_array[output_pointers[i]];
+    }
+
+    // Clean up
+    delete[] transitions;
 }
 
 #endif
