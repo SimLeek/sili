@@ -798,7 +798,7 @@ std::size_t parallel_merge_sorted_coos(INDEX_ARRAYS &m_indices, VALUE_ARRAYS &m_
     }
 
     // step 1.5: scan the duplicates
-    std::vector<std::size_t> scanned_duplicates(num_threads, 0);
+    std::vector<std::size_t> scanned_duplicates(num_threads+1, 0);
     fullScanValues(duplicates_per_thread, scanned_duplicates);
 
     // step 1.6: shift the chunks

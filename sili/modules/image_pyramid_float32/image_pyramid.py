@@ -176,9 +176,9 @@ def display_pyramid_from_camera(camera):
 
 
 if __name__ == '__main__':
-    # display_pyramid("../../../test/files/test_ai_pls_ignore.png")
+     display_pyramid("../../../test/files/test_ai_pls_ignore.png")
 
-    # generate_pyramid_file("../../../test/files/test_ai_pls_ignore.png",
-    #                      "../../../test/files/test_ai_pyr_pls_ignore.pyr")
+     generate_pyramid_file("../../../test/files/test_ai_pls_ignore.png",
+                          "../../../test/files/test_ai_pyr_pls_ignore.pyr")
 
-    display_pyramid_from_camera(0)
+    #display_pyramid_from_camera(0)

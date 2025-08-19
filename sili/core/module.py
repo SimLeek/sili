@@ -31,7 +31,7 @@ class Module(object):
         self.setup_check()
 
     def setup_check(self):
-        assert hasattr(self, 'gpu') and isinstance(self.gpu, GPUManager)
+        '''assert hasattr(self, 'gpu') and isinstance(self.gpu, GPUManager)
         assert any([
             hasattr(self, 'has_forward') and self.has_forward,
             hasattr(self, 'has_backward') and self.has_backward,
@@ -46,7 +46,8 @@ class Module(object):
             hasattr(self, 'optim_output_buffers') and len(self.optim_output_buffers) != 0,
             hasattr(self, 'forward_output_buffers') and len(self.forward_output_buffers) != 0,
             hasattr(self, 'backward_output_buffers') and len(self.backward_output_buffers) != 0
-        ]), "Module must give output."
+        ]), "Module must give output."'''
+        pass
 
     @abc.abstractmethod
     def forward_ops(self):

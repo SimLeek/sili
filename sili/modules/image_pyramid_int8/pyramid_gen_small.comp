@@ -1,117 +1,158 @@
-#version 430
+#version 450
 
-layout (local_size_x_id = 0) in;
+layout(local_size_x_id = 0, local_size_y_id = 1) in;
 
 struct PyramidLevel {
-    int startIdx;
+    int x;
+    int y;
     int width;
     int height;
 };
 
-layout(std430, binding = 0) buffer InputBuffer {
-    uint inputImage[];
-};
-
-layout(std430, binding = 1) buffer PyramidData {
+layout(std430, binding = 0) buffer PyramidData {
     int channels;
     int levels;
     PyramidLevel pyramidLevels[];
 };
 
-layout(std430, binding = 2) buffer OutputBuffer {
-    uint outputPyramid[];
-};
+layout(binding = 1, rgba8ui) uniform uimage2D inputImage;
+layout(binding = 2, rgba8ui) uniform uimage2D outputPyramid;
 
 layout(std430, binding = 3) buffer LevelBuffer {
-    int currentLevel;
+    int currentLevel[];
 };
 
-layout(constant_id = 1) const float pyr_div = 1.0;
+// output padding offset
+layout(constant_id = 2) const int x_offset = 0;  // >
+layout(constant_id = 3) const int y_offset = 0;  // v
+layout(constant_id = 4) const int w_offset = 0;  // <
+layout(constant_id = 5) const int h_offset = 0;  // ^
 
-#define EXTRACT_UINT8_VALUE(value, index) \
-    (((value) >> ((index)<<3)) & 0xFFu)
-#define EXTRACT_8_FROM_32_ARRAY(array, index) \
-    EXTRACT_UINT8_VALUE(array[index >> 2], index & 3)
-// atomic or no longer needed since we're in the same workgroup:
-#define WRITE_8_TO_32_ARRAY(array, outputIndex, value) \
-    array[outputIndex >> 2] |= value << ((outputIndex & 3) << 3)
+// Shared memory for prefetching pixels (with padding), max size, not actual. The input image section is put here.
+// scaling should never be more than div 2 on w and h, so doing that will be undefined
+shared uint sharedPixels[(gl_WorkGroupSize.x + x_offset+w_offset) * (gl_WorkGroupSize.y + y_offset+h_offset) * 4];
 
-#define SAMPLE_CORNER_VALUES(array, indices) \
-        vec4( \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.x)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.y)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.z)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.w)) \
-        )
-
-ivec4 calculate_corner_indices(int start_index, int channels, vec2 inputCoords, int nextPyramidLevelHeight, int channel)
-    {
-        int topLeftIdx = start_index * channels +
-                         int(floor(inputCoords.x) * nextPyramidLevelHeight * channels +
-                             floor(inputCoords.y) * channels + channel);
-        int topRightIdx = topLeftIdx + nextPyramidLevelHeight * channels;
-        int bottomLeftIdx = topLeftIdx + channels;
-        int bottomRightIdx = topRightIdx + channels;
-        return ivec4(topLeftIdx, topRightIdx, bottomLeftIdx, bottomRightIdx);
+vec2 calculateInputCoordinates(int x, int y, int currentLevel) {
+    float inputX, inputY;
+    if (currentLevel == levels - 1) {
+        PyramidLevel currentPyramidLevel = pyramidLevels[currentLevel];
+        ivec2 nextDimensions = imageSize(inputImage);
+        inputX = float(x) * float(nextDimensions.x) / float(currentPyramidLevel.width);
+        inputY = float(y) * float(nextDimensions.y) / float(currentPyramidLevel.height);
+    } else {
+        PyramidLevel currentPyramidLevel = pyramidLevels[currentLevel];
+        PyramidLevel nextPyramidLevel = pyramidLevels[currentLevel + 1];
+        inputX = float(x + nextPyramidLevel.x + x_offset) * float(nextPyramidLevel.width) / float(currentPyramidLevel.width);
+        inputY = float(y + nextPyramidLevel.y + y_offset) * float(nextPyramidLevel.height) / float(currentPyramidLevel.height);
     }
-
-float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRight, float topLeft, float topRight) {
-    float left = mix(topLeft, bottomLeft, y);
-    float right = mix(topRight, bottomRight, y);
-    return mix(left, right, x);
-}
-
-vec2 calculateInputCoordinates(int x, int y, int nextLevelWidth, int nextLevelHeight, int currentLevelWidth, int currentLevelHeight) {
-    float inputX = float(x) * float(nextLevelWidth) / float(currentLevelWidth);
-    float inputY = float(y) * float(nextLevelHeight) / float(currentLevelHeight);
     return vec2(inputX, inputY);
 }
 
-void processPixel(int x, int y, int channel, int inputIdx, int outputIdx, int level) {
-    if (level < levels - 1) {
-        PyramidLevel currentPyramidLevel = pyramidLevels[level];
-        PyramidLevel nextPyramidLevel = pyramidLevels[level + 1];
+void fetchInputToShared(int nextLevelWidth, int nextLevelHeight, ivec2 topLeft, ivec2 bottomRight, ivec2 localdim, int currentLevel) {
+    int totalPixels = localdim.x * localdim.y;
+    uint totalInvocations = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
+    uint workPerInstance = uint(ceil(float(totalPixels) / float(totalInvocations)));
+    uint invocationIdx = gl_LocalInvocationID.y * gl_WorkGroupSize.x + gl_LocalInvocationID.x;
 
-        vec2 inputCoords = calculateInputCoordinates(x, y, nextPyramidLevel.width, nextPyramidLevel.height,
-                                                     currentPyramidLevel.width, currentPyramidLevel.height);
+    for (uint i = 0; i < workPerInstance && (invocationIdx + i * totalInvocations) < uint(totalPixels); i++) {
+        uint pixelIdx = invocationIdx + i * totalInvocations;
+        int px = int(pixelIdx % uint(localdim.x)) + topLeft.x;
+        int py = int(pixelIdx / uint(localdim.x)) + topLeft.y;
 
-        ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords, nextPyramidLevel.height, channel);
-        vec4 v = SAMPLE_CORNER_VALUES(outputPyramid, cornerIndices);
-
-        float interpolatedValue = bilinearInterpolation(
-                fract(inputCoords.x),
-                fract(inputCoords.y),
-                v.z, v.w, v.x, v.y
-        );
-
-        uint result = uint(interpolatedValue / pyr_div);
-        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
-    } else {
-        // Base image copy
-        uint result = EXTRACT_8_FROM_32_ARRAY(inputImage, inputIdx);
-        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
-    }
-}
-
-void main() {
-    int levelWidth, levelHeight;
-
-    for (int level = currentLevel; level >= 0; level--) {
-        for (int pack_idx = 0; pack_idx < 4; pack_idx++) {
-        uint idx = (gl_GlobalInvocationID.x << 2) + pack_idx;
-        levelWidth = pyramidLevels[level].width;
-        levelHeight = pyramidLevels[level].height;
-        int y = int((idx / channels) % levelHeight);
-        int x = int((idx / channels) / levelHeight);
-        int channel = int(int(idx) % channels);
-        int outputIndex = pyramidLevels[level].startIdx * channels + x * levelHeight * channels + y * channels + channel;
-
-        if (x < levelWidth && y < levelHeight) {
-                processPixel(x, y, channel, int(idx), outputIndex, level);
+        uint sharedIdx = (py - topLeft.y) * (gl_WorkGroupSize.x + x_offset + w_offset) * channels +
+                        (px - topLeft.x) * channels;
+        if (px >= 0 && px < nextLevelWidth && py >= 0 && py < nextLevelHeight) {
+            uvec4 pixel;
+            if (currentLevel == levels - 1) {
+                pixel = imageLoad(inputImage, ivec2(px, py));
+            } else {
+                pixel = imageLoad(outputPyramid, ivec2(px, py));
+            }
+            for (int c = 0; c < channels; c++) {
+                sharedPixels[sharedIdx + c] = pixel[c];
+            }
+        } else {
+            for (int c = 0; c < channels; c++) {
+                sharedPixels[sharedIdx + c] = 0;
             }
         }
     }
-    if(gl_GlobalInvocationID.x==0) {
-        currentLevel = levels-1;
+
+    barrier();
+}
+
+void processPixel(int x, int y, vec2 inputCoords, ivec2 localdim, int currentLevel) {
+    PyramidLevel currentPyramidLevel = pyramidLevels[currentLevel];
+
+    // note: inputCoords is in global texture space, but only the fractional part is used for interpolation
+    float fx = fract(inputCoords.x);
+    float fy = fract(inputCoords.y);
+
+    uvec4 result;
+
+    for (int c = 0; c < channels; c++) {
+        uint localBaseIdx = gl_LocalInvocationID.y * localdim.x * channels + gl_LocalInvocationID.x * channels + c;
+
+        vec4 v = vec4(
+            float(sharedPixels[localBaseIdx]),
+            float(sharedPixels[localBaseIdx + channels]),
+            float(sharedPixels[localBaseIdx + localdim.x * channels]),
+            float(sharedPixels[localBaseIdx + localdim.x * channels + channels])
+        );
+
+        float interpolatedValue = mix(
+            mix(v.x, v.y, fx),
+            mix(v.z, v.w, fx),
+            fy
+        );
+
+        result[c] = uint(interpolatedValue);
+    }
+    imageStore(outputPyramid, ivec2(x + currentPyramidLevel.x + x_offset, y + currentPyramidLevel.y + y_offset), result);
+}
+
+void main() {
+    uint workgroupIdx = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;  // 0
+    for (int cpl = currentLevel[workgroupIdx]; cpl >= 0; cpl--) {
+        PyramidLevel currLevel = pyramidLevels[cpl];
+        int levelWidth = currLevel.width;
+        int levelHeight = currLevel.height;
+        int x = int(gl_GlobalInvocationID.x);
+        int y = int(gl_GlobalInvocationID.y);
+
+        if (x >= levelWidth || y >= levelHeight) return;
+
+        // Calculate input coordinates for the next level
+        int nextLevelWidth = currLevel.width;
+        int nextLevelHeight = currLevel.height;
+        if (cpl < levels - 1) {
+            PyramidLevel nextPyramidLevel = pyramidLevels[cpl + 1];
+            nextLevelWidth = nextPyramidLevel.width;
+            nextLevelHeight = nextPyramidLevel.height;
+        }else{ // should almost never be the case, but maybe ppl want really small pyramids, idk
+            ivec2 imageDimensions = imageSize(inputImage);
+            nextLevelWidth = imageDimensions.x;
+            nextLevelHeight = imageDimensions.y;
+        }
+
+        vec2 inputCoords = calculateInputCoordinates(x, y, cpl);
+
+        // Calculate workgroup's output region
+        ivec2 workgroupBase = ivec2(gl_WorkGroupID.x * gl_WorkGroupSize.x, gl_WorkGroupID.y * gl_WorkGroupSize.y);
+        vec2 tlCoords = calculateInputCoordinates(workgroupBase.x, workgroupBase.y, cpl);
+        vec2 brCoords = calculateInputCoordinates(workgroupBase.x + int(gl_WorkGroupSize.x), workgroupBase.y + int(gl_WorkGroupSize.y), cpl);
+        ivec2 topLeft = ivec2(floor(tlCoords));
+        ivec2 bottomRight = ivec2(ceil(brCoords));
+
+        // Ensure bounds are within input image
+        topLeft = max(topLeft, ivec2(0));
+        bottomRight = min(bottomRight, ivec2(nextLevelWidth, nextLevelHeight));
+
+        ivec2 localdim = ivec2(bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+
+        fetchInputToShared(nextLevelWidth, nextLevelHeight, topLeft, bottomRight, localdim, cpl);
+
+        // note: inputCoords is technically in the wrong position for local memory, but we only care about the fract part
+        processPixel(x, y, inputCoords, localdim, cpl);
     }
 }

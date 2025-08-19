@@ -20,6 +20,10 @@ I'd rather us benefit over the current companies, and I'd trust us to handle the
 
 # ToDO
 
+* Fiber contract forward, expand backward, optim with link to 1-3 for transformer
+  * Fiber only needs to act on recurrent input. Matrices : recurrent by output concat input by output gives input+recurrent by output, so this is one sided and much easier
+  * working q, k, v transformer example
+
 * Automatic execution graph generation
   * store the modules and dependency buffers inside buffer objects
   * Make a pipeline class that receives the output, loss, and optim buffers (if any)

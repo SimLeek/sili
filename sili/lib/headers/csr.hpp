@@ -34,8 +34,9 @@ struct ReduceArraySize {
 template <typename INDEX_ARRAYS>
 using ReducedArray = typename ReduceArraySize<INDEX_ARRAYS>::type;
 
-template <typename SIZE_TYPE, typename VALUE_TYPE>
-inline sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>>
+//replace this with create_csr_input, create csc_weights, etc.
+/*template <typename SIZE_TYPE, typename VALUE_TYPE>
+inline sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>>
 create_csr(
     SIZE_TYPE num_rows,
     SIZE_TYPE num_cols,
@@ -43,14 +44,14 @@ create_csr(
     std::shared_ptr<SIZE_TYPE> indices,
     std::shared_ptr<VALUE_TYPE> values
 ) {
-    sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, std::shared_ptr<SIZE_TYPE>, std::shared_ptr<VALUE_TYPE>> csr;
+    sparse_struct<SIZE_TYPE, CSRPtrs<SIZE_TYPE>, CSRIndices<SIZE_TYPE>, UnaryValues<VALUE_TYPE>> csr;
     csr.rows = num_rows;
     csr.cols = num_cols;
     csr.ptrs[0] = ptrs;
     csr.indices[0] = indices;
     csr.values[0] = values;
     return csr;
-}
+}*/
 /*
 template <class SIZE_TYPE, class VALUE_TYPE>
 CSRInput<SIZE_TYPE, VALUE_TYPE> convert_vov_to_csr(const sili::unique_vector<sili::unique_vector<SIZE_TYPE>> *indices,
@@ -422,7 +423,14 @@ view_coo_values(const sparse_struct<SIZE_TYPE, SIZE_TYPE, INDEX_ARRAYS, VALUE_AR
     int selections_used = 0;
     for (std::size_t idx = 0; idx < num_value_indices + num_selections; ++idx) {
         auto true_idx = idx - selections_used;
-        if(idx==selection[selections_used] || true_idx>num_value_indices){
+        // Guard access to selection[] to avoid OOB when selections_used == num_selections.
+        const bool is_next_selection = (selections_used < static_cast<int>(num_selections)) &&
+                                       (idx == static_cast<std::size_t>(selection[selections_used]));
+
+        // Consider exhaustion of original value arrays: use '>=' (was previously '>') to correctly detect end.
+        const bool exhausted_originals = (true_idx >= static_cast<int>(num_value_indices));
+
+        if (is_next_selection || exhausted_originals) {
             expanded_coo.values[idx] = std::make_unique<stdarr_of_uniqarr_type<VALUE_ARRAYS>[]>(nnz);
             std::fill(expanded_coo.values[idx].get(), expanded_coo.values[idx].get() + nnz, SIZE_TYPE(0));
             selections_used++;
@@ -460,7 +468,7 @@ static void free(sparse_struct<
 
     int selections_used = 0;
     for (std::size_t idx = 0; idx < num_value_indices; ++idx) {
-        if(idx==selection[selections_used]){
+        if(selections_used < static_cast<int>(num_selections) && idx==selection[selections_used]){
             expanded_coo.values[idx].reset();
             selections_used++;
         }else{

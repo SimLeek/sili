@@ -135,4 +135,4 @@ def find_good_dimension_sizes(max_workgroup_size, dimensions):
 
 
 if __name__ == "__main__":
-    print(find_good_dimension_sizes(1024, 7))
+    print(find_good_dimension_sizes(1280, 2))

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10.0)
 project(sili_tests)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -22,7 +22,7 @@ set(SOURCE_FILES
     )
 
 set(HEADER_FILES
-    tests_main.h
+    tests_main.hpp
 
     ../sili/lib/headers/parallel.hpp
 
@@ -46,7 +46,8 @@ find_package(OpenMP REQUIRED)
 add_executable(
     sili_tests
 
-    test_parallel.cpp
+    #test_parallel.cpp
+    test_fiber.cpp
 
     #test_sisldo.cpp
     #COMPLETED TESTS

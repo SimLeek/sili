@@ -1,111 +1,98 @@
-#version 430
+#version 450
 
-layout (local_size_x_id = 0) in;
-
-struct PyramidLevel {
-    int startIdx;
-    int width;
-    int height;
-};
+layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z = 1) in;
 
 layout(std430, binding = 0) buffer InputBuffer {
     uint inputImage[];
 };
-
-layout(std430, binding = 1) buffer PyramidData {
-    int channels;
-    int levels;
-    PyramidLevel pyramidLevels[];
-};
-
-layout(std430, binding = 2) buffer OutputBuffer {
+layout(std430, binding = 1) buffer OutputBuffer {
     uint outputPyramid[];
 };
 
-layout(std430, binding = 3) buffer LevelBuffer {
-    int currentLevel;
-};
+layout(constant_id = 2) const uint x_offset = 0;
+layout(constant_id = 3) const uint y_offset = 0;
+layout(constant_id = 4) const uint w_offset = 0;
+layout(constant_id = 5) const uint h_offset = 0;
+layout(constant_id = 6) const uint in_width = 0;
+layout(constant_id = 7) const uint in_height = 0;
+layout(constant_id = 8) const uint in_channels = 0;
+layout(constant_id = 9) const uint out_width = 0;
+layout(constant_id = 10) const uint out_height = 0;
+layout(constant_id = 11) const uint out_channels = 0;
 
-layout(constant_id = 1) const float pyr_div = 1.0;
+#define EXTRACT_UINT8_VALUE(value, index) (((value) >> ((index) << 3)) & 0xFFu)
 
-#define EXTRACT_UINT8_VALUE(value, index) \
-    (((value) >> ((index)<<3)) & 0xFFu)
-#define EXTRACT_8_FROM_32_ARRAY(array, index) \
-    EXTRACT_UINT8_VALUE(array[index >> 2], index & 3)
-// atomic or needed to avoid workgroup edges causing 'dead pixels':
-#define WRITE_8_TO_32_ARRAY(array, outputIndex, value) \
-    atomicOr(array[outputIndex >> 2], value << ((outputIndex & 3) << 3))
+#define EXTRACT_CHANNEL_1(array, index) EXTRACT_UINT8_VALUE(array[index >> 2], index & 3)
 
-#define SAMPLE_CORNER_VALUES(array, indices) \
-        vec4( \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.x)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.y)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.z)), \
-            float(EXTRACT_8_FROM_32_ARRAY(array, indices.w)) \
-        )
+#define EXTRACT_CHANNEL_2(array, index) uvec2( \
+    EXTRACT_UINT8_VALUE(array[index >> 1], (index & 1) * 2), \
+    EXTRACT_UINT8_VALUE(array[index >> 1], (index & 1) * 2 + 1) \
+)
 
-ivec4 calculate_corner_indices(int start_index, int channels, vec2 inputCoords, int nextPyramidLevelHeight, int channel)
-    {
-        int topLeftIdx = start_index * channels +
-                         int(floor(inputCoords.x) * nextPyramidLevelHeight * channels +
-                             floor(inputCoords.y) * channels + channel);
-        int topRightIdx = topLeftIdx + nextPyramidLevelHeight * channels;
-        int bottomLeftIdx = topLeftIdx + channels;
-        int bottomRightIdx = topRightIdx + channels;
-        return ivec4(topLeftIdx, topRightIdx, bottomLeftIdx, bottomRightIdx);
+#define EXTRACT_CHANNEL_4(array, index) uvec4( \
+    EXTRACT_UINT8_VALUE(array[index], 0), \
+    EXTRACT_UINT8_VALUE(array[index], 1), \
+    EXTRACT_UINT8_VALUE(array[index], 2), \
+    EXTRACT_UINT8_VALUE(array[index], 3) \
+)
+
+#define WRITE_CHANNEL_1(array, outputIndex, value) \
+    array[outputIndex >> 2] = (array[outputIndex >> 2] & \
+        ~(0xFFu << ((outputIndex & 3) << 3))) | \
+        ((value.x & 0xFFu) << ((outputIndex & 3) << 3))
+
+#define WRITE_CHANNEL_2(array, outputIndex, value) \
+    array[outputIndex >> 1] = (array[outputIndex >> 1] & \
+        ~(0xFFFFu << ((outputIndex & 1) * 16))) | \
+        ((value.x & 0xFFu) << ((outputIndex & 1) * 16)) | \
+        ((value.y & 0xFFu) << ((outputIndex & 1) * 16 + 8))
+
+#define WRITE_CHANNEL_4(array, outputIndex, value) \
+    array[outputIndex] = ((value.x & 0xFFu)) | \
+        ((value.y & 0xFFu) << 8) | \
+        ((value.z & 0xFFu) << 16) | \
+        ((value.w & 0xFFu) << 24)
+
+#define EXTRACT_PIXEL(array, index, pixel, channels) \
+    {\
+        switch (channels) { \
+            case 1: pixel.x = EXTRACT_CHANNEL_1(array, index); break; \
+            case 2: pixel.xy = EXTRACT_CHANNEL_2(array, index); break; \
+            case 4: pixel = EXTRACT_CHANNEL_4(array, index); break; \
+        } \
     }
 
-float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRight, float topLeft, float topRight) {
-    float left = mix(topLeft, bottomLeft, y);
-    float right = mix(topRight, bottomRight, y);
-    return mix(left, right, x);
-}
-
-vec2 calculateInputCoordinates(int x, int y, int nextLevelWidth, int nextLevelHeight, int currentLevelWidth, int currentLevelHeight) {
-    float inputX = float(x) * float(nextLevelWidth) / float(currentLevelWidth);
-    float inputY = float(y) * float(nextLevelHeight) / float(currentLevelHeight);
-    return vec2(inputX, inputY);
-}
-
-void processPixel(int x, int y, int channel, int inputIdx, int outputIdx) {
-    if (currentLevel < levels - 1) {
-        PyramidLevel currentPyramidLevel = pyramidLevels[currentLevel];
-        PyramidLevel nextPyramidLevel = pyramidLevels[currentLevel + 1];
-
-        vec2 inputCoords = calculateInputCoordinates(x, y, nextPyramidLevel.width, nextPyramidLevel.height,
-                                                     currentPyramidLevel.width, currentPyramidLevel.height);
-
-        ivec4 cornerIndices = calculate_corner_indices(nextPyramidLevel.startIdx, channels, inputCoords, nextPyramidLevel.height, channel);
-        vec4 v = SAMPLE_CORNER_VALUES(outputPyramid, cornerIndices);
-
-        float interpolatedValue = bilinearInterpolation(
-                fract(inputCoords.x),
-                fract(inputCoords.y),
-                v.z, v.w, v.x, v.y
-        );
-
-        uint result = uint(interpolatedValue / pyr_div);
-        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
-    } else {
-        // Base image copy
-        uint result = EXTRACT_8_FROM_32_ARRAY(inputImage, inputIdx);
-        WRITE_8_TO_32_ARRAY(outputPyramid, outputIdx, result);
+#define WRITE_PIXEL(array, outputIndex, value, channels) \
+    { \
+        switch (channels) { \
+            case 1: WRITE_CHANNEL_1(array, outputIndex, value); break; \
+            case 2: WRITE_CHANNEL_2(array, outputIndex, value); break; \
+            case 4: WRITE_CHANNEL_4(array, outputIndex, value); break; \
+        } \
     }
+
+uint calculate_index(uint width, uint height, uint channels, ivec2 top_left, ivec2 inputCoords) {
+    uint topLeftIdx = top_left.x*height + top_left.y +
+                      int(floor(inputCoords.x) * height +
+                          floor(inputCoords.y));
+    return topLeftIdx;
 }
 
 void main() {
-    int levelWidth = pyramidLevels[currentLevel].width;
-    int levelHeight = pyramidLevels[currentLevel].height;
+    uvec4 pixel;
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    ivec2 tl = ivec2(0,0);
+    uint idx = calculate_index(in_width, in_height, in_channels, tl, ivec2(x, y));
+    EXTRACT_PIXEL(inputImage, idx, pixel, in_channels);
+    uint idx2 = calculate_index(out_width, out_height, out_channels, tl, ivec2(out_width - x, out_height - y));
+    WRITE_PIXEL(outputPyramid, idx2, pixel, out_channels);
 
-    for (int pack_idx = 0; pack_idx < 4; pack_idx++) {
-        uint idx = (gl_GlobalInvocationID.x << 2) + pack_idx;
-        int y = int((idx / channels) % levelHeight);
-        int x = int((idx / channels) / levelHeight);
-        int channel = int(idx % channels);
-        int outputIndex = pyramidLevels[currentLevel].startIdx * channels + x * levelHeight * channels + y * channels + channel;
+    //pixel = EXTRACT_CHANNEL_4(inputImage, idx);
+    //WRITE_CHANNEL_4(outputPyramid, idx2, pixel);
 
-        if (x < levelWidth && y < levelHeight) {
-            processPixel(x, y, channel, int(idx), outputIndex);
-        }
-    }
+    //pixel = EXTRACT_CHANNEL_4(inputImage, idx);
+    //WRITE_CHANNEL_4(outputPyramid, idx, pixel);
+    //uint idx2 = calculate_index(in_width, in_height, in_channels, tl, ivec2(in_width-x, in_height-y), 0);
+    //WRITE_CHANNEL_4(outputPyramid, idx2, pixel);
 }

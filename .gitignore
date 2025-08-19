@@ -3,7 +3,10 @@ build/
 *.spv
 *.pyr
 *.mp4
+*.webm
 .idea
 __pycache__/
 test/build_tests
 docs/
+*.egg-info
+*.prof

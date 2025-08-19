@@ -6,6 +6,11 @@
 #ifndef __SPARSE_STRUCT_HPP_
 #define __SPARSE_STRUCT_HPP_
 
+/*todo: make a sparse_database.hpp version of this
+ *  use MySQL to do so: https://x.com/i/grok/share/nf5C5MSMBZqsXfdBWYJ2LoUlC
+ *  for sparse linear forward: read the specific rows of a csc, compute the output in parallel
+ *  other operations will also need to be modified.
+ */
 #include <cstddef>
 #include <memory>
 
@@ -214,6 +219,286 @@ struct sparse_weights{
 
 template <class SIZE_TYPE, class VALUE_TYPE>
 using SparseLinearWeights = sparse_weights<CSRSynapses<SIZE_TYPE, VALUE_TYPE>, COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>>;
+
+//TODO: MOVE THESE TO A BINDINGS FILE AND USE pybind11_add_module(namr ${SOURCES} "${SOURCE_DIR}/bindings.cpp")
+
+/*
+#include <sstream>
+#include <string>
+#include <array>
+#include <cstdint>
+#include <bit>
+#include <stdfloat>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
+namespace py = pybind11;
+
+// -----------------------------------------------------------------------------
+// Endianness Helpers and Serialization Functions (same as before)
+// -----------------------------------------------------------------------------
+
+constexpr bool is_host_little_endian() {
+    return std::endian::native == std::endian::little;
+}
+
+template <typename T>
+T swap_endian(T val) {
+    static_assert(std::is_arithmetic_v<T>, "swap_endian only supports arithmetic types.");
+    union {
+        T val;
+        unsigned char bytes[sizeof(T)];
+    } src, dest;
+    src.val = val;
+    for (std::size_t i = 0; i < sizeof(T); i++) {
+        dest.bytes[i] = src.bytes[sizeof(T) - 1 - i];
+    }
+    return dest.val;
+}
+
+template <typename T>
+void write_value(std::ostream& os, const T& val) {
+    T tmp = val;
+    if (!is_host_little_endian()) {
+        tmp = swap_endian(tmp);
+    }
+    os.write(reinterpret_cast<const char*>(&tmp), sizeof(T));
+}
+
+template <typename T>
+void read_value(std::istream& is, T& val) {
+    is.read(reinterpret_cast<char*>(&val), sizeof(T));
+    if (!is_host_little_endian()) {
+        val = swap_endian(val);
+    }
+}
+
+// Serialization for a single sparse_struct into an existing stream.
+template <typename SIZE_TYPE, typename PTRS, typename INDICES, typename VALUES>
+void serialize_sparse_struct(std::ostream& os, const sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& mat) {
+    // Write dimensions and reserved space.
+    write_value(os, mat.rows);
+    write_value(os, mat.cols);
+    write_value(os, mat._reserved_space);
+    // Write nnz.
+    SIZE_TYPE nnz = mat.nnz();
+    write_value(os, nnz);
+    // Write pointer arrays.
+    if constexpr(is_std_array_v<decltype(mat.ptrs)>) {
+        for (const auto& ptr : mat.ptrs) {
+            for (std::size_t i = 0; i < static_cast<std::size_t>(mat.rows) + 1; ++i) {
+                write_value(os, ptr.get()[i]);
+            }
+        }
+    } else {
+        write_value(os, mat.ptrs);
+    }
+    // Write indices arrays.
+    for (const auto& idx_ptr : mat.indices) {
+        for (SIZE_TYPE i = 0; i < nnz; ++i) {
+            write_value(os, idx_ptr.get()[i]);
+        }
+    }
+    // Write value arrays.
+    using value_t = std::remove_pointer_t<decltype(mat.values[0].get())>;
+    for (const auto& val_ptr : mat.values) {
+        for (SIZE_TYPE i = 0; i < nnz; ++i) {
+            write_value(os, val_ptr.get()[i]);
+        }
+    }
+}
+
+// Deserialization from an existing stream.
+template <typename SIZE_TYPE, typename PTRS, typename INDICES, typename VALUES>
+void deserialize_sparse_struct(std::istream& is, sparse_struct<SIZE_TYPE, PTRS, INDICES, VALUES>& mat) {
+    read_value(is, mat.rows);
+    read_value(is, mat.cols);
+    read_value(is, mat._reserved_space);
+    SIZE_TYPE nnz = 0;
+    read_value(is, nnz);
+    // Read pointer arrays.
+    if constexpr(is_std_array_v<decltype(mat.ptrs)>) {
+        for (auto& ptr : mat.ptrs) {
+            ptr.reset(new SIZE_TYPE[mat.rows + 1]);
+            for (std::size_t i = 0; i < static_cast<std::size_t>(mat.rows) + 1; ++i) {
+                read_value(is, ptr.get()[i]);
+            }
+        }
+    } else {
+        read_value(is, mat.ptrs);
+        nnz = mat.ptrs;
+    }
+    // Read indices arrays.
+    for (auto& idx_ptr : mat.indices) {
+        idx_ptr.reset(new SIZE_TYPE[nnz]);
+        for (SIZE_TYPE i = 0; i < nnz; ++i) {
+            read_value(is, idx_ptr.get()[i]);
+        }
+    }
+    // Read value arrays.
+    using value_t = std::remove_pointer_t<decltype(mat.values[0].get())>;
+    for (auto& val_ptr : mat.values) {
+        val_ptr.reset(new value_t[nnz]);
+        for (SIZE_TYPE i = 0; i < nnz; ++i) {
+            read_value(is, val_ptr.get()[i]);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Pickle Support Functions for CSRInput
+// -----------------------------------------------------------------------------
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline py::bytes csr_input_getstate(const CSRInput<SIZE_TYPE, VALUE_TYPE> &self) {
+    std::ostringstream oss(std::ios::binary);
+    serialize_sparse_struct(oss, self);
+    return py::bytes(oss.str());
+}
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline CSRInput<SIZE_TYPE, VALUE_TYPE> csr_input_setstate(py::bytes state) {
+    std::string buffer = state;  // Implicit conversion to std::string.
+    std::istringstream iss(buffer, std::ios::binary);
+    CSRInput<SIZE_TYPE, VALUE_TYPE> obj;
+    deserialize_sparse_struct(iss, obj);
+    return obj;
+}
+
+// -----------------------------------------------------------------------------
+// Pickle Support Functions for CSRSynapses
+// -----------------------------------------------------------------------------
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline py::bytes csrsynapses_getstate(const CSRSynapses<SIZE_TYPE, VALUE_TYPE> &self) {
+    std::ostringstream oss(std::ios::binary);
+    serialize_sparse_struct(oss, self);
+    return py::bytes(oss.str());
+}
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline CSRSynapses<SIZE_TYPE, VALUE_TYPE> csrsynapses_setstate(py::bytes state) {
+    std::string buffer = state;
+    std::istringstream iss(buffer, std::ios::binary);
+    CSRSynapses<SIZE_TYPE, VALUE_TYPE> obj;
+    deserialize_sparse_struct(iss, obj);
+    return obj;
+}
+
+
+//COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE>
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline py::bytes coosynaptogenesis_getstate(const COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> &self) {
+    std::ostringstream oss(std::ios::binary);
+    serialize_sparse_struct(oss, self);
+    return py::bytes(oss.str());
+}
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> coosynaptogenesis_setstate(py::bytes state) {
+    std::string buffer = state;
+    std::istringstream iss(buffer, std::ios::binary);
+    COOSynaptogenesis<SIZE_TYPE, VALUE_TYPE> obj;
+    deserialize_sparse_struct(iss, obj);
+    return obj;
+}
+
+//SparseLinearWeights
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline py::bytes SparseLinearWeights_getstate(const SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> &self) {
+    std::ostringstream oss(std::ios::binary);
+    serialize_sparse_struct(oss, self.connections);
+    serialize_sparse_struct(oss, self.probes);
+    return py::bytes(oss.str());
+}
+
+template<class SIZE_TYPE, class VALUE_TYPE>
+inline SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> SparseLinearWeights_setstate(py::bytes state) {
+    std::string buffer = state;
+    std::istringstream iss(buffer, std::ios::binary);
+    SparseLinearWeights<SIZE_TYPE, VALUE_TYPE> obj;
+    deserialize_sparse_struct(iss, obj.connections);
+    deserialize_sparse_struct(iss, obj.probes);
+    return obj;
+}
+
+// -----------------------------------------------------------------------------
+// Pybind11 Module Registration
+// -----------------------------------------------------------------------------
+
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+void declare_CSRInput(py::module &m, const std::string &size_typestr, const std::string &value_typestr) {
+    // Create a unique class name, e.g., "CSRInput_uint32_double"
+    std::string pyclass_name = "CSRInput_" + size_typestr + "_" + value_typestr;
+    
+    // Alias for the specific instantiation
+    using CSRInput_t = CSRInput<SIZE_TYPE, VALUE_TYPE>;
+    
+    // Bind the class to Python
+    py::class_<CSRInput_t>(m, pyclass_name.c_str())
+        .def(py::init<>())
+        .def("nnz", &CSRInput_t::nnz)
+        .def(py::pickle(
+            // Serialization (getstate)
+            [](const CSRInput_t &self) {
+                std::ostringstream oss(std::ios::binary);
+                serialize_sparse_struct(oss, self);
+                return py::bytes(oss.str());
+            },
+            // Deserialization (setstate)
+            [](py::bytes state) {
+                std::string buffer = state;
+                std::istringstream iss(buffer, std::ios::binary);
+                CSRInput_t obj;
+                deserialize_sparse_struct(iss, obj);
+                return obj;
+            }
+        ));
+}
+
+template <typename SIZE_TYPE, typename VALUE_TYPE>
+void declare_SparseLinearWeights(py::module &m, const std::string &size_typestr, const std::string &value_typestr) {
+    std::string pyclass_name = "SparseLinearWeights_" + size_typestr + "_" + value_typestr;
+    using SparseLinearWeights_t = SparseLinearWeights<SIZE_TYPE, VALUE_TYPE>;
+    
+    py::class_<SparseLinearWeights_t>(m, pyclass_name.c_str())
+        .def(py::init<>())
+        .def_readonly("connections", &SparseLinearWeights_t::connections)
+        .def_readonly("probes", &SparseLinearWeights_t::probes)
+        .def(py::pickle(
+            [](const SparseLinearWeights_t &self) {
+                std::ostringstream oss(std::ios::binary);
+                serialize_sparse_struct(oss, self.connections);
+                serialize_sparse_struct(oss, self.probes);
+                return py::bytes(oss.str());
+            },
+            [](py::bytes state) {
+                std::string buffer = state;
+                std::istringstream iss(buffer, std::ios::binary);
+                SparseLinearWeights_t obj;
+                deserialize_sparse_struct(iss, obj.connections);
+                deserialize_sparse_struct(iss, obj.probes);
+                return obj;
+            }
+        ));
+}
+
+PYBIND11_MODULE(sparse_bindings, m) {
+    m.doc() = "Bindings for sparse matrix structures with pickle support.";
+
+    declare_CSRInput<uint64_t, float>(m, "u64", "f32");
+    declare_CSRInput<uint32_t, float>(m, "u32", "f32");
+    declare_CSRInput<uint16_t, float>(m, "u16", "f32");
+    declare_CSRInput<uint8_t, float>(m, "u8", "f32");
+
+    declare_SparseLinearWeights<uint64_t, float>(m, "u64", "f32");
+    declare_SparseLinearWeights<uint32_t, float>(m, "u32", "f32");
+    declare_SparseLinearWeights<uint16_t, float>(m, "u16", "f32");
+    declare_SparseLinearWeights<uint8_t, float>(m, "u8", "f32");
+}*/
+
 
 
 #endif

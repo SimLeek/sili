@@ -1,7 +1,7 @@
 #include "../sili/lib/headers/linear_sisldo.hpp"
 #include "csr.hpp"
 #include "sparse_struct.hpp"
-#include "tests_main.h"
+#include "tests_main.hpp"
 #include <catch2/catch_message.hpp>
 #include <cstddef>
 #include <vector>
@@ -914,7 +914,7 @@ TEST_CASE("train loop from zero", "[integration_train_loop]") {
     std::vector<std::tuple<std::vector<SIZE_TYPE>, std::vector<SIZE_TYPE>, std::vector<VALUE_TYPE>>> expected_probes = {
         {{1, 2}, {0, 0}, {0, 0}},
         {{1, 2}, {0, 0}, {-0.03, -0.03}},
-        {{1, 2}, {0, 0}, {-0.0533253 -0.0533253}},
+        {{1, 2}, {0, 0}, {-0.0533253, -0.0533253}},
         {{1, 2}, {0, 0}, {0, 0}},
         {{1, 2}, {0, 0}, {0, 0}},
     };

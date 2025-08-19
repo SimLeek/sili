@@ -52,8 +52,8 @@ template <class A, class B> class ComparatorGT {
  * @tparam T Type of elements in the vector.
  * @tparam Compare Comparator type for ordering elements.
  */
-template <typename T, typename Compare> class PermutationComparator {
-    const std::vector<T> &a; ///< Reference to the vector being sorted.
+template <typename VEC, typename Compare> class PermutationComparator {
+    const VEC &a; ///< Reference to the vector being sorted.
     Compare cmp;             ///< Comparator instance.
   public:
     /**
@@ -61,7 +61,7 @@ template <typename T, typename Compare> class PermutationComparator {
      * @param a Vector whose values determine the order.
      * @param cmp Comparator to use for ordering.
      */
-    PermutationComparator(const std::vector<T> &a, Compare cmp) : a(a), cmp(cmp) {}
+    PermutationComparator(const VEC &a, Compare cmp) : a(a), cmp(cmp) {}
 
     /**
      * @brief Compares two indices based on their corresponding values.
@@ -106,17 +106,17 @@ template <typename T, typename Compare> class PermutationComparator {
  * @param right Right boundary of the current segment.
  */
 template <class TYPE, class COMPARE = ComparatorLT<TYPE, TYPE>>
-void _omp_merge_sort_recursive(std::vector<TYPE> &v, unsigned long left, unsigned long right, const COMPARE& cmp=COMPARE()) {
+void _omp_merge_sort_vector_recursive(std::vector<TYPE> &v, unsigned long left, unsigned long right, const COMPARE& cmp=COMPARE()) {
     if (left < right) {
         if (right - left >= 32) {
             unsigned long mid = (left + right) / 2;
 #pragma omp taskgroup
             {
 #pragma omp task shared(v) untied if (right - left >= (1 << 14))
-                _omp_merge_sort_recursive(v, left, mid);
+                _omp_merge_sort_vector_recursive(v, left, mid);
 #pragma omp task shared(v) untied if (right - left >= (1 << 14))
-                _omp_merge_sort_recursive(v, mid + 1, right);
-#pragma omp taskyield
+                _omp_merge_sort_vector_recursive(v, mid + 1, right);
+//#pragma omp taskyield
             }
             std::inplace_merge(v.begin() + left, v.begin() + mid + 1, v.begin() + right + 1, cmp);
         } else {
@@ -125,14 +125,28 @@ void _omp_merge_sort_recursive(std::vector<TYPE> &v, unsigned long left, unsigne
     }
 }
 
-/**
- * @brief Parallel merge sort using OpenMP.
- *
- * @tparam TYPE Type of elements in the vector.
- * @tparam COMPARE Comparator type, defaults to less-than.
- * @param v Vector to sort in-place.
- */
-template <class TYPE, class COMPARE = ComparatorLT<TYPE, TYPE>> void omp_merge_sort(std::vector<TYPE> &v, const COMPARE& cmp=COMPARE()) {
+template <class S, class CONTAINER, class COMPARE = ComparatorLT<typename CONTAINER::value_type, typename CONTAINER::value_type>>
+void _omp_merge_sort_array_recursive(CONTAINER &v, S left, S right, const COMPARE& cmp=COMPARE()) {
+    if (left < right) {
+        if (right - left >= 32) {
+            S mid = (left + right) / 2;
+#pragma omp taskgroup
+            {
+#pragma omp task shared(v) untied if (right - left >= (1 << 14))
+                _omp_merge_sort_array_recursive(v, left, mid);
+#pragma omp task shared(v) untied if (right - left >= (1 << 14))
+                _omp_merge_sort_array_recursive(v, mid + 1, right);
+//#pragma omp taskyield
+            }
+            std::inplace_merge(v + left, v + mid + 1, v + right + 1, cmp);
+        } else {
+            std::sort(v + left, v + right + 1, cmp);
+        }
+    }
+}
+
+template <class TYPE, class COMPARE = ComparatorLT<TYPE, TYPE>> 
+void omp_merge_sort_vector(std::vector<TYPE> &v, const COMPARE& cmp=COMPARE()) {
     // this handles v.size==0, so v.size-1 == unsigned long max
     size_t max_val;
     if(v.size()==0){
@@ -142,8 +156,23 @@ template <class TYPE, class COMPARE = ComparatorLT<TYPE, TYPE>> void omp_merge_s
     }
 #pragma omp parallel
 #pragma omp single
-    _omp_merge_sort_recursive<TYPE, COMPARE>(v, 0, max_val, cmp);
+    _omp_merge_sort_vector_recursive<TYPE, COMPARE>(v, 0, max_val, cmp);
 }
+
+template <class S, class CONTAINER, class COMPARE = ComparatorLT<typename CONTAINER::value_type, typename CONTAINER::value_type>> 
+void omp_merge_sort_array(S num, CONTAINER &v, const COMPARE& cmp=COMPARE()) {
+    // this handles v.size==0, so v.size-1 == unsigned long max
+    S max_val;
+    if(num==0){
+        max_val = 0;
+    }else{
+        max_val = num-1;
+    }
+#pragma omp parallel
+#pragma omp single
+    _omp_merge_sort_array_recursive<S, CONTAINER, COMPARE>(v, 0, max_val, cmp);
+}
+
 
 /**
  * @brief Computes a permutation that sorts a vector in parallel.
@@ -155,11 +184,20 @@ template <class TYPE, class COMPARE = ComparatorLT<TYPE, TYPE>> void omp_merge_s
  * @return Vector of indices representing the sorted permutation.
  */
 template <typename TYPE, typename COMPARE>
-std::vector<std::size_t> omp_merge_sort_permutation(const std::vector<TYPE> &a, COMPARE cmp) {
+std::vector<std::size_t> omp_merge_sort_vector_permutation(const std::vector<TYPE> &a, COMPARE cmp) {
     std::vector<std::size_t> p(a.size());
     std::iota(p.begin(), p.end(), 0);
-    PermutationComparator<TYPE, COMPARE> perm_cmp(a, cmp);
-    omp_merge_sort<std::size_t, PermutationComparator<TYPE, COMPARE>>(p, perm_cmp);
+    PermutationComparator<std::vector<TYPE>, COMPARE> perm_cmp(a, cmp);
+    omp_merge_sort_vector<std::size_t, PermutationComparator<std::vector<TYPE>, COMPARE>>(p, perm_cmp);
+    return p;
+}
+
+template <typename S, typename TYPE, typename COMPARE>
+std::vector<std::size_t> omp_merge_sort_array_permutation(S num, TYPE* a, COMPARE cmp) {
+    std::vector<std::size_t> p(num);
+    std::iota(p.begin(), p.end(), 0);
+    PermutationComparator<TYPE*, COMPARE> perm_cmp(a, cmp);
+    omp_merge_sort_vector<std::size_t, PermutationComparator<TYPE*, COMPARE>>(p, perm_cmp);
     return p;
 }
 
@@ -170,13 +208,25 @@ std::vector<std::size_t> omp_merge_sort_permutation(const std::vector<TYPE> &a, 
  * @param p Permutation vector.
  * @param vec Vector to permute in-place.
  */
-template <typename T> void omp_apply_permutation_parallel(const std::vector<std::size_t> &p, std::vector<T> &vec) {
+template <typename T> void omp_apply_permutation_vector_parallel(const std::vector<std::size_t> &p, std::vector<T> &vec) {
     std::vector<T> temp(vec.size());
 #pragma omp parallel for
     for (size_t i = 0; i < p.size(); ++i) {
         temp[i] = vec[p[i]];
     }
     vec = std::move(temp);
+}
+
+template <class S, typename T> void omp_apply_permutation_array_parallel(const S num, const std::vector<std::size_t> &p, T* arr) {
+    std::vector<T> temp(num);
+#pragma omp parallel for
+    for (size_t i = 0; i < num; ++i) {
+        temp[i] = arr[p[i]];
+    }
+#pragma omp parallel for
+    for (size_t i = 0; i < num; ++i) {
+        arr[i] = temp[i];  // parallel copy instead of memcpy... probably slower
+    }
 }
 
 /**
@@ -187,8 +237,13 @@ template <typename T> void omp_apply_permutation_parallel(const std::vector<std:
  * @param vectors References to vectors to permute.
  */
 template <typename... Vectors>
-void apply_permutation_to_all_parallel(const std::vector<std::size_t> &p, Vectors &...vectors) {
-    (omp_apply_permutation_parallel(p, vectors), ...);
+void apply_permutation_to_all_vector_parallel(const std::vector<std::size_t> &p, Vectors &...vectors) {
+    (omp_apply_permutation_vector_parallel(p, vectors), ...);
+}
+
+template <class S, typename... ARRAY_TYPES>
+void apply_permutation_to_all_array_parallel(const S num, const std::vector<std::size_t> &p, ARRAY_TYPES* ...arrays) {
+    (omp_apply_permutation_array_parallel(num, p, arrays), ...);
 }
 
 /**
@@ -202,9 +257,15 @@ void apply_permutation_to_all_parallel(const std::vector<std::size_t> &p, Vector
  * @param vectors Additional vectors to permute.
  */
 template <typename T, typename Compare, typename... Vectors>
-void omp_sort_multiple_vectors(const std::vector<T> &primary, Compare cmp, Vectors &...vectors) {
-    std::vector<std::size_t> p = omp_merge_sort_permutation(primary, cmp);
-    apply_permutation_to_all_parallel(p, vectors...);
+void omp_sort_multiple_vectors(std::vector<T> &primary, Compare cmp, Vectors &...vectors) {
+    std::vector<std::size_t> p = omp_merge_sort_vector_permutation(primary, cmp);
+    apply_permutation_to_all_vector_parallel(p, primary, vectors...); // primary needs to be included so it is also sorted
+}
+
+template <typename S, typename T, typename Compare, typename... ARRAY_TYPES>
+void omp_sort_multiple_arrays(const S num, T* primary, Compare cmp, ARRAY_TYPES* ...arrays) {
+    std::vector<std::size_t> p = omp_merge_sort_array_permutation(num, primary, cmp);
+    apply_permutation_to_all_array_parallel(num, p, primary, arrays...);
 }
 
 /**
@@ -215,8 +276,12 @@ void omp_sort_multiple_vectors(const std::vector<T> &primary, Compare cmp, Vecto
  * @param primary Vector to sort by.
  * @param vectors Additional vectors to permute.
  */
-template <typename T, typename... Vectors> void omp_sort_ascending(const std::vector<T> &primary, Vectors &...vectors) {
+template <typename T, typename... Vectors> void omp_sort_vectors_ascending(std::vector<T> &primary, Vectors &...vectors) {
     omp_sort_multiple_vectors(primary, ComparatorLT<T, T>(), vectors...);
+}
+
+template <typename S, typename T, typename... ARRAY_TYPES> void omp_sort_arrays_ascending(const S num, T* primary, ARRAY_TYPES*...arrays) {
+    omp_sort_multiple_arrays(num, primary, ComparatorLT<T, T>(), arrays...);
 }
 
 /**
@@ -266,7 +331,7 @@ size_t omp_lower_bound(std::vector<T> arr, size_t size, const T &val, const int 
             }
         }
     }
-    omp_merge_sort(results);
+    omp_merge_sort_vector(results);
     return results[0];
 }
 
@@ -279,7 +344,7 @@ size_t omp_lower_bound(std::vector<T> arr, size_t size, const T &val, const int 
  * @param n Number of elements.
  */
 template <typename SIZE_TYPE, typename SIZE_TYPE2>
-void omp_scan_exclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+void omp_scan_exclusive(const SIZE_TYPE* input, SIZE_TYPE* output, SIZE_TYPE2 n) {
     SIZE_TYPE scan_a = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)
     for (SIZE_TYPE i = 0; i < n; ++i) {
@@ -300,7 +365,7 @@ void omp_scan_exclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_p
  * @param n Number of elements.
  */
  template <typename SIZE_TYPE, typename SIZE_TYPE2>
- void omp_scan_inclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+ void omp_scan_inclusive(const SIZE_TYPE* input, SIZE_TYPE* output, SIZE_TYPE2 n) {
      SIZE_TYPE scan_a = 0;
  #pragma omp parallel for simd reduction(inscan, + : scan_a)
      for (SIZE_TYPE i = 0; i < n; ++i) {
@@ -322,7 +387,7 @@ void omp_scan_exclusive(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_p
  * @param n Number of elements.
  */
 template <typename SIZE_TYPE, typename SIZE_TYPE2>
-void omp_full_scan(const std::shared_ptr<SIZE_TYPE[]> &input, std::shared_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
+void omp_full_scan(const std::unique_ptr<SIZE_TYPE[]> &input, std::unique_ptr<SIZE_TYPE[]> &output, SIZE_TYPE2 n) {
     SIZE_TYPE scan_a = 0;
     output[0] = 0;
 #pragma omp parallel for simd reduction(inscan, + : scan_a)
@@ -363,7 +428,7 @@ sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>> omp_t
 
     size_t actual_k = std::min(k, cols);
 
-    std::vector<size_t> cumulate(rows + 1);
+    std::unique_ptr<size_t[]> cumulate = std::make_unique<size_t[]>(rows + 1);
     std::vector<T> a_vals;
     a_vals.reserve(rows * actual_k);
     std::vector<size_t> a_indices;
@@ -408,7 +473,7 @@ sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>> omp_t
             }
             top_k_perm.resize(cumulate[row]);
         }
-        omp_merge_sort(top_k_perm);
+        omp_merge_sort_vector(top_k_perm);
 
         std::vector<T> values(cumulate[row]);
 #pragma omp parallel for

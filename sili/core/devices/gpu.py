@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-
+import numpy as np
 import kp
 
 
@@ -22,13 +22,27 @@ class GPUManager(object):
         # this variable is specifically necessary for reductions ops often used in sparse shaders:
         self.maxComputeSharedMemorySize = 49152
 
-    def buffer(self, data, type=None):
-        """Returns an SSBO buffer. It's not a 'tensor'. (Try using np.float32 types with type)"""
-        if type is None:
-            return self.manager.tensor(data)
-        else:
-            return self.manager.tensor(data, tensor_type=type)
+    def buffer(self, data, memory_type=kp.MemoryTypes.device):
+        """Returns an SSBO buffer. (Try using np.float32 or np.uint8 types with type)"""
+        if not isinstance(data, np.ndarray):
+            raise ValueError(f"Expected np.ndarray for buffer data, got {type(data)}")
+        return self.manager.tensor(
+            data=data,
+            memory_type=memory_type
+        )
 
+    def image(self, data, width, height, num_channels, memory_type=kp.MemoryTypes.device):
+        """Returns an image buffer. (Data should be a flattened np.ndarray, supports uint8 or float32)"""
+        if not isinstance(data, np.ndarray):
+            raise ValueError(f"Expected np.ndarray for image data, got {type(data)}")
+        # Use image_t to support multiple data types
+        return self.manager.image_t(
+            data=data,
+            width=width,
+            height=height,
+            num_channels=num_channels,
+            memory_type=memory_type
+        )
 
 def get_shader(filename):
     if filename.endswith('.glsl') or filename.endswith('.comp'):
@@ -36,9 +50,9 @@ def get_shader(filename):
         if not os.path.exists(spv_filename):
             try:
                 subprocess.run(["glslc", filename, "-o", spv_filename],
-                                        check=True,
-                                        stdout=sys.stdout,
-                                        stderr=sys.stderr, text=True)
+                               check=True,
+                               stdout=sys.stdout,
+                               stderr=sys.stderr, text=True)
             except subprocess.CalledProcessError as e:
                 print("glslc command failed with output:")
                 print(e.stdout)

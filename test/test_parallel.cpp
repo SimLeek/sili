@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cstdlib> // for rand()
 #include <numeric> // for std::iota
-#include "tests_main.h"
+#include "tests_main.hpp"
 
 // Test ComparatorLT
 TEST_CASE("ComparatorLT works correctly", "[comparator]") {
