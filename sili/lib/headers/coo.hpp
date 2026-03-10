@@ -77,6 +77,7 @@ Stars, because they're sparse like COOs:
 #include <omp.h>
 #include <vector>
 
+//todo: use a c++ ide to rename this coalesce everywhere
 template <typename INDEX_ARRAYS, typename VALUE_ARRAYS>
 std::size_t inplace_merge_coo(INDEX_ARRAYS &indices,
                             VALUE_ARRAYS &values,

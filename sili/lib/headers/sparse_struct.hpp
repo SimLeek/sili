@@ -42,14 +42,14 @@ constexpr bool is_std_array_v = is_std_array<T>::value;
  * @tparam SIZE_TYPE The type used for sizes and indices.
  */
 template <class SIZE_TYPE>
-using CSRPointers = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
+using CSRPointers = std::array<std::shared_ptr<SIZE_TYPE[]>, 1>;
 
 /**
  * @brief Alias template for CSR indices, stored as an array of unique pointers.
  * @tparam SIZE_TYPE The type used for sizes and indices.
  */
 template <class SIZE_TYPE>
-using CSRIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 1>;
+using CSRIndices = std::array<std::shared_ptr<SIZE_TYPE[]>, 1>;
 
 /**
  * @brief Alias template for COO pointers, stored as a single size value (nnz).
@@ -63,42 +63,42 @@ using COOPointers = SIZE_TYPE;  // just store nnz
  * @tparam SIZE_TYPE The type used for sizes and indices.
  */
 template <class SIZE_TYPE>
-using COOIndices = std::array<std::unique_ptr<SIZE_TYPE[]>, 2>;
+using COOIndices = std::array<std::shared_ptr<SIZE_TYPE[]>, 2>;
 
 /**
  * @brief Alias template for unary values, stored as one array of unique pointers.
  * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
  */
 template <class VALUE_TYPE>
-using UnaryValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 1>;
+using UnaryValues = std::array<std::shared_ptr<VALUE_TYPE[]>, 1>;
 
 /**
  * @brief Alias template for binary values, stored as two arrays of unique pointers.
  * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
  */
 template <class VALUE_TYPE>
-using BiValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 2>;
+using BiValues = std::array<std::shared_ptr<VALUE_TYPE[]>, 2>;
 
 /**
  * @brief Alias template for ternary values, stored as three arrays of unique pointers.
  * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
  */
 template <class VALUE_TYPE>
-using TriValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 3>;
+using TriValues = std::array<std::shared_ptr<VALUE_TYPE[]>, 3>;
 
 /**
  * @brief Alias template for quaternary values, stored as four arrays of unique pointers.
  * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
  */
 template <class VALUE_TYPE>
-using QuadValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 4>;
+using QuadValues = std::array<std::shared_ptr<VALUE_TYPE[]>, 4>;
 
 /**
  * @brief Alias template for quinary values, stored as five arrays of unique pointers.
  * @tparam VALUE_TYPE The type of the values stored in the sparse matrix.
  */
 template <class VALUE_TYPE>
-using PentaValues = std::array<std::unique_ptr<VALUE_TYPE[]>, 5>;
+using PentaValues = std::array<std::shared_ptr<VALUE_TYPE[]>, 5>;
 
 /**
  * @brief Helper variable template to determine the number of index arrays.

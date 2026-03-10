@@ -423,6 +423,7 @@ sparse_struct<size_t, CSRPtrs<size_t>, CSRIndices<size_t>, UnaryValues<T>> omp_t
     bool use_abs = true,
     int num_cpus = 4,
     Compare cmp = ComparatorGT<T, T>()) {
+    // todo: omp_top_k_per_row should automatically detect when to use single-threaded using nnz
     // Adjust comparator for absolute values if use_abs is true
     AbsComparator<T, T, Compare> abs_cmp(cmp);
 

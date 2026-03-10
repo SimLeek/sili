@@ -21,7 +21,22 @@ setup(
     author_email='simulator.leek@gmail.com',
     license='MIT License',
     packages=find_packages(exclude=['test', 'test.*']),
-
+    ext_modules=[
+        CppExtension(
+            'backend',
+            [
+                'sili/cpu_backend.cpp'
+            ],
+            # most optimization work will be done here and in the compiler.
+            # Let the compiler use immintrin.h,
+            # unless you have extensive tests to prove you beat the compiler, you did not.
+            extra_compile_args=['-O3', '-Wall', '-shared', '-std=c++20', '-fPIC', *out, '-march=native', '-fopenmp', '-ffast-math'],
+            extra_link_args=['lgomp']
+        )
+    ],
+        cmdclass={
+            'build_ext': BuildExtension
+        },
 
     install_requires=reqs,
     include_package_data=True,
@@ -30,20 +45,3 @@ setup(
         "Programming Language :: Python :: 3",
     ],
 )
-
-'''ext_modules=[
-    CppExtension(
-        'backend',
-        [
-            'sili/cpu_backend.cpp'
-        ],
-        # most optimization work will be done here and in the compiler.
-        # Let the compiler use immintrin.h, unless you have extensive tests to prove you beat the compiler.
-        extra_compile_args=['-O3', '-Wall', '-shared', '-std=c++20', '-fPIC', *out, '-march=native', '-fopenmp', '-ffast-math'],
-        extra_link_args=['lgomp']
-    )
-],
-    cmdclass={
-        'build_ext': BuildExtension
-    },
-'''
